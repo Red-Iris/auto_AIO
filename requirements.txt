@@ -1,0 +1,9 @@
+# CLI版本依赖
+pyshark>=0.5.3
+argparse
+
+# GUI版本依赖  
+PyQt5>=5.15.0
+pyinstaller>=5.0
+
+# 注意：tshark和nmap需要单独安装系统级工具
