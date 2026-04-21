@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog,
     QTabWidget, QGroupBox, QCheckBox, QMessageBox, QProgressBar,
-    QTreeWidget, QTreeWidgetItem, QSplitter, QStatusBar
+    QTreeWidget, QTreeWidgetItem, QSplitter, QStatusBar, QRadioButton
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt5.QtGui import QFont, QIcon
@@ -243,6 +243,20 @@ class SecurityTestGUI(QMainWindow):
         options_group = QGroupBox("扫描选项")
         options_layout = QVBoxLayout()
         
+        # 扫描模式选择
+        scan_mode_layout = QHBoxLayout()
+        self.tcp_radio = QRadioButton("TCP扫描")
+        self.udp_radio = QRadioButton("UDP扫描")
+        self.tcp_radio.setChecked(True)  # 默认选择TCP模式
+        
+        scan_mode_layout.addWidget(self.tcp_radio)
+        scan_mode_layout.addWidget(self.udp_radio)
+        options_layout.addLayout(scan_mode_layout)
+        
+        # 精简模式选项
+        self.lite_mode_checkbox = QCheckBox("使用精简模式（适合快速展示）")
+        options_layout.addWidget(self.lite_mode_checkbox)
+        
         self.xml_output_checkbox = QCheckBox("生成XML格式报告")
         options_layout.addWidget(self.xml_output_checkbox)
         
@@ -356,9 +370,17 @@ class SecurityTestGUI(QMainWindow):
             QMessageBox.warning(self, "输入错误", "请输入有效的IP地址")
             return
             
+        # 获取扫描模式
+        scan_mode = "tcp" if self.tcp_radio.isChecked() else "udp"
+        
+        # 获取精简模式设置
+        lite_mode = self.lite_mode_checkbox.isChecked()
+            
         # 准备参数
         params = {
             'target_ip': target_ip,
+            'scan_mode': scan_mode,
+            'lite': lite_mode,
             'xml_output': self.xml_output_checkbox.isChecked()
         }
         

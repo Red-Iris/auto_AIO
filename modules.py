@@ -8,6 +8,7 @@ Date: 2026-03-08
 """
 
 import os
+import sys
 import pyshark
 import subprocess
 import json
@@ -418,6 +419,8 @@ class NetworkScannerModule(BaseModule):
         Args:
             params (Dict[str, Any]): 参数字典
                 - target_ip: 目标IP地址
+                - scan_mode: 扫描模式 ('tcp' 或 'udp'，默认为 'tcp')
+                - lite: 是否使用精简模式 (bool，默认为False)
                 - output_dir: 输出目录路径（可选）
                 - xml_output: 是否输出XML格式结果，默认为False
                 
@@ -425,6 +428,8 @@ class NetworkScannerModule(BaseModule):
             bool: 是否成功执行
         """
         target_ip = params.get('target_ip')
+        scan_mode = params.get('scan_mode', 'tcp').lower()  # 默认为TCP模式
+        lite_mode = params.get('lite', False)  # 默认为详细模式
         xml_output = params.get('xml_output', False)
         
         if not target_ip:
@@ -432,16 +437,35 @@ class NetworkScannerModule(BaseModule):
             print("错误: 缺少参数 'target_ip'")
             return False
         
-        self.logger.info(f"开始对目标 {target_ip} 进行网络扫描...")
-        print(f"开始对目标 {target_ip} 进行网络扫描...")
+        if scan_mode not in ['tcp', 'udp']:
+            self.logger.error("扫描模式必须是 'tcp' 或 'udp'")
+            print("错误: 扫描模式必须是 'tcp' 或 'udp'")
+            return False
+        
+        scan_type = "精简" if lite_mode else "详细"
+        self.logger.info(f"开始对目标 {target_ip} 进行{scan_type}{scan_mode.upper()}模式网络扫描...")
+        print(f"开始对目标 {target_ip} 进行{scan_type}{scan_mode.upper()}模式网络扫描...")
         
         try:
             # 验证nmap是否可用
             self.logger.info("验证nmap是否已安装...")
-            result = subprocess.run(['nmap', '--version'], 
-                                    stdout=subprocess.PIPE, 
-                                    stderr=subprocess.PIPE, 
-                                    text=True)
+            # 在Windows上隐藏子进程窗口
+            if sys.platform == "win32":
+                # 使用CREATE_NO_WINDOW标志隐藏窗口
+                import subprocess
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                result = subprocess.run(['nmap', '--version'], 
+                                        stdout=subprocess.PIPE, 
+                                        stderr=subprocess.PIPE, 
+                                        text=True,
+                                        startupinfo=startupinfo)
+            else:
+                result = subprocess.run(['nmap', '--version'], 
+                                        stdout=subprocess.PIPE, 
+                                        stderr=subprocess.PIPE, 
+                                        text=True)
             if result.returncode != 0:
                 self.logger.error(f"nmap未安装或不可用: {result.stderr}")
                 print("错误: nmap未安装或不可用")
@@ -453,22 +477,49 @@ class NetworkScannerModule(BaseModule):
             print("错误: nmap未安装或不在系统PATH中")
             return False
         
-        # 执行全端口扫描
-        self.logger.info("正在进行全端口扫描...")
-        print("正在进行全端口扫描，请稍候...")
+        # 根据扫描模式和精简模式构建命令
+        if scan_mode == 'tcp':
+            if lite_mode:
+                # 精简TCP模式: nmap -T4 -sS -sV -p- [target IP]
+                cmd = ['nmap', '-T4', '-sS', '-sV', '-p-', target_ip]
+                print("正在进行精简TCP全端口扫描，请稍候...")
+            else:
+                # 详细TCP模式: nmap -T4 -sS -sV -O -A -p- [target IP]
+                cmd = ['nmap', '-T4', '-sS', '-sV', '-O', '-A', '-p-', target_ip]
+                print("正在进行详细TCP全端口扫描，请稍候...")
+        else:  # UDP模式
+            if lite_mode:
+                # 精简UDP模式: nmap -sU -T4 -sV -Pn [target IP]
+                cmd = ['nmap', '-sU', '-T4', '-sV', '-Pn', target_ip]
+                print("正在进行精简UDP服务扫描，请稍候...")
+            else:
+                # 详细UDP模式: nmap -sU -T4 -A -v -Pn [target IP]
+                cmd = ['nmap', '-sU', '-T4', '-A', '-v', '-Pn', target_ip]
+                print("正在进行详细UDP服务扫描，请稍候...UDP扫描通常比较耗时...")
         
-        # 构建nmap命令 - 只获取基本扫描结果
-        cmd = ['nmap', '-T4', '-sS', '-sV', '-O', '-A', '-p-', target_ip]
+        # 执行扫描
+        self.logger.info(f"执行{scan_type}{scan_mode.upper()}扫描...")
         self.logger.info(f"执行命令: {' '.join(cmd)}")
         
-        result = subprocess.run(cmd, 
-                                stdout=subprocess.PIPE, 
-                                stderr=subprocess.PIPE, 
-                                text=True)
+        # 在Windows上隐藏子进程窗口
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            result = subprocess.run(cmd, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True,
+                                    startupinfo=startupinfo)
+        else:
+            result = subprocess.run(cmd, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
         
         if result.returncode != 0:
-            self.logger.error(f"扫描失败: {result.stderr}")
-            print(f"扫描失败: {result.stderr}")
+            self.logger.error(f"{scan_type}{scan_mode.upper()}扫描失败: {result.stderr}")
+            print(f"{scan_type}{scan_mode.upper()}扫描失败: {result.stderr}")
             return False
         
         # 获取项目目录
@@ -476,8 +527,9 @@ class NetworkScannerModule(BaseModule):
         project_manager = ProjectManager(params.get('output_dir'))
         project_manager.create_project_directory()
         
-        # 创建nmap_scan子目录，使用目标IP作为子目录名
-        nmap_subdir_name = f"nmap_scan_{target_ip.replace('.', '_')}"
+        # 创建nmap_scan子目录，使用目标IP和扫描模式作为子目录名
+        mode_prefix = "lite_" if lite_mode else ""
+        nmap_subdir_name = f"nmap_{mode_prefix}{scan_mode}_scan_{target_ip.replace('.', '_')}"
         project_manager.create_subdirectory([nmap_subdir_name])
         nmap_dir = project_manager.project_dir / nmap_subdir_name
         
@@ -485,7 +537,7 @@ class NetworkScannerModule(BaseModule):
         scan_result = result.stdout
         
         # 保存普通文本格式（始终输出）
-        txt_path = nmap_dir / f"nmap_scan_{target_ip}.txt"
+        txt_path = nmap_dir / f"nmap_{mode_prefix}{scan_mode}_scan_{target_ip}.txt"
         self.logger.info(f"保存文本格式扫描结果到: {txt_path}")
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(scan_result)
@@ -493,14 +545,37 @@ class NetworkScannerModule(BaseModule):
         # 可选：保存XML格式
         if xml_output:
             print("正在生成XML格式报告...")
-            xml_cmd = ['nmap', '-T4', '-sS', '-sV', '-O', '-A', '-p-', '-oX', '-', target_ip]
-            self.logger.info(f"执行XML格式扫描命令: {' '.join(xml_cmd)}")
-            xml_result = subprocess.run(xml_cmd, 
-                                        stdout=subprocess.PIPE, 
-                                        stderr=subprocess.PIPE, 
-                                        text=True)
+            
+            # 根据扫描模式和精简模式构建XML输出命令
+            if scan_mode == 'tcp':
+                if lite_mode:
+                    xml_cmd = ['nmap', '-T4', '-sS', '-sV', '-p-', '-oX', '-', target_ip]
+                else:
+                    xml_cmd = ['nmap', '-T4', '-sS', '-sV', '-O', '-A', '-p-', '-oX', '-', target_ip]
+            else:  # UDP
+                if lite_mode:
+                    xml_cmd = ['nmap', '-sU', '-T4', '-sV', '-Pn', '-oX', '-', target_ip]
+                else:
+                    xml_cmd = ['nmap', '-sU', '-T4', '-A', '-v', '-Pn', '-oX', '-', target_ip]
+                
+            self.logger.info(f"执行XML格式{scan_type}{scan_mode.upper()}扫描命令: {' '.join(xml_cmd)}")
+            # 在Windows上隐藏子进程窗口
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                xml_result = subprocess.run(xml_cmd, 
+                                            stdout=subprocess.PIPE, 
+                                            stderr=subprocess.PIPE, 
+                                            text=True,
+                                            startupinfo=startupinfo)
+            else:
+                xml_result = subprocess.run(xml_cmd, 
+                                            stdout=subprocess.PIPE, 
+                                            stderr=subprocess.PIPE, 
+                                            text=True)
             if xml_result.returncode == 0:
-                xml_path = nmap_dir / f"nmap_scan_{target_ip}.xml"
+                xml_path = nmap_dir / f"nmap_{mode_prefix}{scan_mode}_scan_{target_ip}.xml"
                 self.logger.info(f"保存XML格式扫描结果到: {xml_path}")
                 with open(xml_path, 'w', encoding='utf-8') as f:
                     f.write(xml_result.stdout)
@@ -509,8 +584,8 @@ class NetworkScannerModule(BaseModule):
                 self.logger.warning("XML格式扫描失败")
                 print("警告: XML格式扫描失败")
         
-        self.logger.info(f"Nmap扫描完成，结果已保存到: {nmap_dir}")
-        print(f"Nmap扫描完成，结果已保存到: {nmap_dir}")
+        self.logger.info(f"Nmap {scan_type}{scan_mode.upper()}扫描完成，结果已保存到: {nmap_dir}")
+        print(f"Nmap {scan_type}{scan_mode.upper()}扫描完成，结果已保存到: {nmap_dir}")
         return True
 
 
