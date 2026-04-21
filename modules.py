@@ -87,6 +87,7 @@ class TLSAnalyzerModule(BaseModule):
                 - output_dir: 输出目录路径（可选）
                 - tshark_path: TShark可执行文件路径（可选）
                 - generate_certificates: 是否生成证书文件（可选，默认False）
+                - certificate_type: 证书类型 ('rsa', 'ecc' 或 'auto'，默认为 'auto'）
                 
         Returns:
             bool: 是否成功执行
@@ -94,6 +95,7 @@ class TLSAnalyzerModule(BaseModule):
         pcap_file = params.get('pcap_file')
         tshark_path = params.get('tshark_path')  # 新增TShark路径参数
         generate_certificates = params.get('generate_certificates', False)  # 新增证书生成参数
+        certificate_type = params.get('certificate_type', 'auto')  # 更新默认值为auto
         
         if not pcap_file:
             self.logger.error("缺少参数 'pcap_file'")
@@ -107,10 +109,13 @@ class TLSAnalyzerModule(BaseModule):
         
         self.logger.info(f"开始分析PCAP文件: {pcap_file}")
         print(f"开始分析PCAP文件: {pcap_file}")
-        
+
         # 提取TLS域名和端口信息
         domain_port_map = self._extract_tls_domains_and_ports(pcap_file, tshark_path)
-        
+
+        # 提取HTTP明文传输的URL
+        http_urls = self._extract_http_urls(pcap_file, tshark_path)
+
         if not domain_port_map:
             self.logger.warning("未发现TLS握手包中的域名信息")
             print("未发现TLS握手包中的域名信息")
@@ -120,34 +125,138 @@ class TLSAnalyzerModule(BaseModule):
             print(f"发现 {len(domains)} 个唯一的域名:")
             for domain in domains:
                 print(f"  - {domain} (端口: {domain_port_map[domain]})")
-            
+
             # 创建项目目录结构
             project_manager = ProjectManager(params.get('output_dir'))
             project_dir = project_manager.create_project_directory()
             project_manager.create_subdirectory(list(domains))
-            
+
             self.logger.info(f"项目目录结构已创建完成: {project_dir}")
             print("项目目录结构创建完成")
-            
+
             # 如果需要生成证书，则为每个域名生成证书文件
             if generate_certificates:
-                self.logger.info("开始为每个域名生成证书文件...")
-                print("开始为每个域名生成证书文件...")
-                success = self._generate_certificates_for_domains(domain_port_map, project_manager.project_dir)
+                cert_type_display = certificate_type.upper() if certificate_type != 'auto' else '自动检测'
+                self.logger.info(f"开始为每个域名生成{cert_type_display}证书文件...")
+                print(f"开始为每个域名生成{cert_type_display}证书文件...")
+                success = self._generate_certificates_for_domains(domain_port_map, project_manager.project_dir, certificate_type)
                 if not success:
                     self.logger.warning("证书生成过程中出现错误，但TLS分析已完成")
                     print("警告: 证书生成过程中出现错误，但TLS分析已完成")
-        
+
+        # 处理HTTP明文URL结果
+        if http_urls:
+            self.logger.info(f"发现 {len(http_urls)} 个HTTP明文传输的URL")
+            print(f"发现 {len(http_urls)} 个HTTP明文传输的URL:")
+            for url in http_urls:
+                print(f"  - {url}")
+                self.logger.info(f"HTTP明文URL: {url}")
+
+            # 创建http文件夹并保存URL信息
+            # 使用项目目录而不是当前工作目录
+            http_dir = project_manager.project_dir / "http"
+            http_dir.mkdir(exist_ok=True)
+            
+            # 在文件名中添加时间戳
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            http_file = http_dir / f"http_urls_{timestamp}.txt"
+
+            with open(http_file, 'w', encoding='utf-8') as f:
+                f.write("HTTP明文传输URL列表\n")
+                f.write("=" * 50 + "\n\n")
+                for idx, url in enumerate(http_urls, 1):
+                    f.write(f"{idx}. {url}\n")
+
+            self.logger.info(f"HTTP明文URL已保存到: {http_file}")
+            print(f"HTTP明文URL已保存到: {http_file}")
+        else:
+            self.logger.info("未发现HTTP明文传输的URL")
+            print("未发现HTTP明文传输的URL")
+
         return True
+
+    def _extract_http_urls(self, pcap_file_path: str, tshark_path: str = None) -> list:
+        """
+        从pcap文件中提取HTTP明文传输的URL
+
+        Args:
+            pcap_file_path (str): .pcapng文件路径
+            tshark_path (str): TShark可执行文件路径（可选）
+
+        Returns:
+            list: 包含HTTP明文传输URL的列表
+        """
+        self.logger.info(f"开始提取HTTP明文URL，文件: {pcap_file_path}")
+        http_urls = []
+
+        try:
+            # 使用tshark提取HTTP请求的Host和URI信息
+            if tshark_path:
+                self.logger.debug(f"使用自定义TShark路径: {tshark_path}")
+                cap = pyshark.FileCapture(
+                    pcap_file_path,
+                    display_filter="http.request",
+                    tshark_path=tshark_path,
+                    keep_packets=True
+                )
+            else:
+                cap = pyshark.FileCapture(pcap_file_path, display_filter="http.request")
+
+            for packet in cap:
+                try:
+                    if hasattr(packet, 'http'):
+                        # 提取Host字段
+                        host = None
+                        uri = None
+
+                        if hasattr(packet.http, 'host'):
+                            host = packet.http.host
+                        if hasattr(packet.http, 'request_full_uri'):
+                            uri = packet.http.request_full_uri
+                        elif hasattr(packet.http, 'request_uri'):
+                            uri = packet.http.request_uri
+
+                        # 构建完整的URL
+                        if host and uri:
+                            # 判断是否是http://（明文）
+                            if isinstance(uri, str) and uri.startswith('http'):
+                                http_urls.append(uri)
+                            else:
+                                # 拼接Host和URI
+                                url = f"http://{host}{uri}"
+                                http_urls.append(url)
+                        elif host and not uri:
+                            http_urls.append(f"http://{host}")
+                        elif uri and not host:
+                            http_urls.append(str(uri))
+
+                        self.logger.debug(f"提取到HTTP URL: {http_urls[-1] if http_urls else 'None'}")
+
+                except AttributeError:
+                    continue
+                except Exception as e:
+                    self.logger.error(f"处理HTTP包时出现错误: {e}")
+                    continue
+
+            cap.close()
+
+            # 去重
+            http_urls = list(dict.fromkeys(http_urls))
+
+        except Exception as e:
+            self.logger.error(f"读取PCAP文件提取HTTP URL时出现错误: {e}")
+
+        self.logger.info(f"共提取到 {len(http_urls)} 个HTTP明文URL")
+        return http_urls
 
     def _extract_tls_domains_and_ports(self, pcap_file_path: str, tshark_path: str = None) -> Dict[str, int]:
         """
         从pcap文件中提取TLS握手包中的服务器名称和对应的端口
-        
+
         Args:
             pcap_file_path (str): .pcapng文件路径
             tshark_path (str): TShark可执行文件路径（可选）
-            
+
         Returns:
             Dict[str, int]: 包含域名到端口映射的字典
         """
@@ -196,16 +305,16 @@ class TLSAnalyzerModule(BaseModule):
         self.logger.info(f"共提取到 {len(domain_port_map)} 个域名-端口映射")
         return domain_port_map
 
-    def _extract_cn_from_server_cert(self, domain: str, port: int) -> str:
+    def _extract_cn_from_server_cert(self, domain: str, port: int) -> tuple:
         """
-        从目标服务器的证书中提取Common Name (CN)
+        从目标服务器的证书中提取Common Name (CN)和签名算法
         
         Args:
             domain (str): 目标域名
             port (int): TLS端口，默认8883
             
         Returns:
-            str: 提取的Common Name，如果失败则返回原始域名
+            tuple: (提取的Common Name, 证书签名算法类型('rsa'或'ecc'))
         """
         try:
             # 构建openssl s_client命令
@@ -223,12 +332,12 @@ class TLSAnalyzerModule(BaseModule):
             
             if result.returncode != 0:
                 self.logger.warning(f"无法连接到 {domain}:{port} 获取证书: {result.stderr}")
-                return domain  # 返回原始域名作为备选
+                return domain, 'rsa'  # 返回原始域名和默认rsa算法作为备选
             
             # 从输出中提取证书部分
             cert_output = result.stdout
             
-            # 使用openssl x509解析证书并提取Subject
+            # 使用openssl x509解析证书并提取Subject和签名算法信息
             cmd2 = ['openssl', 'x509', '-noout', '-text']
             result2 = subprocess.run(cmd2,
                                    input=cert_output,
@@ -238,19 +347,32 @@ class TLSAnalyzerModule(BaseModule):
             
             if result2.returncode != 0:
                 self.logger.warning(f"无法解析证书: {result2.stderr}")
-                return domain  # 返回原始域名作为备选
+                return domain, 'rsa'  # 返回原始域名和默认rsa算法作为备选
             
-            # 从证书文本中提取Subject行
+            # 从证书文本中提取Subject行和签名算法信息
             cert_text = result2.stdout
             subject_line = None
+            sig_algo_line = None
+            
             for line in cert_text.split('\n'):
                 if 'Subject:' in line:
                     subject_line = line.strip()
-                    break
+                elif 'Signature Algorithm:' in line:
+                    # 通常第一行 Signature Algorithm 是证书的签名算法
+                    if sig_algo_line is None:
+                        sig_algo_line = line.strip()
             
+            # 确定证书类型
+            cert_type = 'rsa'  # 默认为RSA
+            if sig_algo_line:
+                self.logger.info(f"服务器证书签名算法: {sig_algo_line}")
+                # 检查是否是ECC算法 (ecdsa-with-SHA256 等)
+                if 'ecdsa' in sig_algo_line.lower():
+                    cert_type = 'ecc'
+                    
             if not subject_line:
                 self.logger.warning(f"未在证书中找到Subject字段")
-                return domain  # 返回原始域名作为备选
+                return domain, cert_type  # 返回原始域名和检测到的算法类型
             
             self.logger.debug(f"证书Subject: {subject_line}")
             
@@ -259,7 +381,7 @@ class TLSAnalyzerModule(BaseModule):
             cn_start = subject_line.find('CN=')
             if cn_start == -1:
                 self.logger.warning(f"未在Subject中找到CN字段")
-                return domain  # 返回原始域名作为备选
+                return domain, cert_type  # 返回原始域名和检测到的算法类型
             
             cn_part = subject_line[cn_start + 3:]  # 跳过'CN='
             # CN字段可能后面还有其他字段，用逗号分隔
@@ -270,26 +392,27 @@ class TLSAnalyzerModule(BaseModule):
                 cn_value = cn_part.strip()
             
             if cn_value:
-                self.logger.info(f"从服务器证书提取CN: {cn_value}")
-                return cn_value
+                self.logger.info(f"从服务器证书提取CN: {cn_value}, 类型: {cert_type}")
+                return cn_value, cert_type
             else:
                 self.logger.warning(f"提取的CN为空")
-                return domain
+                return domain, cert_type
                 
         except subprocess.TimeoutExpired:
             self.logger.warning(f"连接 {domain}:{port} 超时")
-            return domain
+            return domain, 'rsa'
         except Exception as e:
             self.logger.error(f"提取证书CN时出现异常: {e}")
-            return domain
+            return domain, 'rsa'
 
-    def _generate_certificates_for_domains(self, domain_port_map: Dict[str, int], project_dir: Path) -> bool:
+    def _generate_certificates_for_domains(self, domain_port_map: Dict[str, int], project_dir: Path, cert_type: str = 'auto') -> bool:
         """
         为每个域名生成证书、密钥和自签名文件
         
         Args:
             domain_port_map (Dict[str, int]): 域名到端口的映射字典
             project_dir (Path): 项目主目录路径
+            cert_type (str): 证书类型 ('rsa', 'ecc' 或 'auto')
             
         Returns:
             bool: 是否成功生成所有证书
@@ -322,72 +445,38 @@ class TLSAnalyzerModule(BaseModule):
                 self.logger.warning(f"域名目录不存在，跳过证书生成: {domain_dir}")
                 continue
             
-            self.logger.info(f"为域名 {domain} (端口: {port}) 生成证书文件...")
-            print(f"为域名 {domain} (端口: {port}) 生成证书文件...")
-            
             try:
-                # 先从服务器证书中提取Common Name
-                extracted_cn = self._extract_cn_from_server_cert(domain, port)
+                # 从服务器证书中提取Common Name和算法类型
+                extracted_cn, detected_type = self._extract_cn_from_server_cert(domain, port)
+                
+                # 确定证书类型
+                actual_cert_type = cert_type
+                if cert_type == 'auto':
+                    actual_cert_type = detected_type
+                    self.logger.info(f"自动检测到域名 {domain} 的证书类型为: {actual_cert_type.upper()}")
+                    print(f"自动检测到域名 {domain} 的证书类型为: {actual_cert_type.upper()}")
+                else:
+                    self.logger.info(f"使用指定证书类型为域名 {domain}: {actual_cert_type.upper()}")
+                    print(f"使用指定证书类型为域名 {domain}: {actual_cert_type.upper()}")
+                
+                self.logger.info(f"为域名 {domain} (端口: {port}) 生成{actual_cert_type.upper()}证书文件...")
+                print(f"为域名 {domain} (端口: {port}) 生成{actual_cert_type.upper()}证书文件...")
+                
                 self.logger.info(f"使用提取的CN '{extracted_cn}' 生成证书")
                 print(f"使用提取的CN '{extracted_cn}' 生成证书")
                 
-                # 1. 生成私钥
-                key_path = domain_dir / "server.key"
-                cmd1 = ['openssl', 'genrsa', '-out', str(key_path), '2048']
-                self.logger.debug(f"执行命令: {' '.join(cmd1)}")
-                result1 = subprocess.run(cmd1, 
-                                        stdout=subprocess.PIPE, 
-                                        stderr=subprocess.PIPE, 
-                                        text=True)
-                if result1.returncode != 0:
-                    self.logger.error(f"生成私钥失败: {result1.stderr}")
-                    print(f"生成私钥失败: {result1.stderr}")
+                # 根据证书类型决定生成方式
+                if actual_cert_type.lower() == 'ecc':
+                    success = self._generate_ecc_certificate(domain_dir, extracted_cn)
+                else:  # 默认为RSA
+                    success = self._generate_rsa_certificate(domain_dir, extracted_cn)
+                
+                if not success:
                     all_success = False
                     continue
                 
-                # 2. 生成证书请求文件（CSR）
-                csr_path = domain_dir / "server.csr"
-                # 准备交互式输入
-                # Country Name (2 letter code) [AU]: 11
-                # State or Province Name (full name) [Some-State]: 11
-                # Locality Name (eg, city) []: 11
-                # Organization Name (eg, company) [Internet Widgits Pty Ltd]: 11
-                # Organizational Unit Name (eg, section) []: 11
-                # Common Name (e.g. server FQDN or YOUR name) []: extracted_cn (使用从服务器证书提取的CN)
-                # Email Address []: 1111
-                # A challenge password []: 1111
-                # An optional company name []: 1111
-                input_data = f"11\n11\n11\n11\n11\n{extracted_cn}\n1111\n1111\n1111\n"
-                
-                cmd2 = ['openssl', 'req', '-new', '-key', str(key_path), '-out', str(csr_path)]
-                self.logger.debug(f"执行命令: {' '.join(cmd2)}")
-                result2 = subprocess.run(cmd2, 
-                                        input=input_data,
-                                        stdout=subprocess.PIPE, 
-                                        stderr=subprocess.PIPE, 
-                                        text=True)
-                if result2.returncode != 0:
-                    self.logger.error(f"生成CSR失败: {result2.stderr}")
-                    print(f"生成CSR失败: {result2.stderr}")
-                    all_success = False
-                    continue
-                
-                # 3. 生成自签名证书
-                crt_path = domain_dir / "server.crt"
-                cmd3 = ['openssl', 'x509', '-req', '-in', str(csr_path), '-signkey', str(key_path), '-out', str(crt_path), '-days', '365']
-                self.logger.debug(f"执行命令: {' '.join(cmd3)}")
-                result3 = subprocess.run(cmd3, 
-                                        stdout=subprocess.PIPE, 
-                                        stderr=subprocess.PIPE, 
-                                        text=True)
-                if result3.returncode != 0:
-                    self.logger.error(f"生成自签名证书失败: {result3.stderr}")
-                    print(f"生成自签名证书失败: {result3.stderr}")
-                    all_success = False
-                    continue
-                
-                self.logger.info(f"成功为域名 {domain} 生成证书文件")
-                print(f"成功为域名 {domain} 生成证书文件")
+                self.logger.info(f"成功为域名 {domain} 生成{actual_cert_type.upper()}证书文件")
+                print(f"成功为域名 {domain} 生成{actual_cert_type.upper()}证书文件")
                 
             except Exception as e:
                 self.logger.error(f"生成证书时出现异常: {e}")
@@ -395,6 +484,107 @@ class TLSAnalyzerModule(BaseModule):
                 all_success = False
         
         return all_success
+    
+    def _generate_rsa_certificate(self, domain_dir: Path, cn: str) -> bool:
+        """生成RSA类型的证书"""
+        try:
+            # 1. 生成RSA私钥
+            key_path = domain_dir / "server.key"
+            cmd1 = ['openssl', 'genrsa', '-out', str(key_path), '2048']
+            self.logger.debug(f"执行命令: {' '.join(cmd1)}")
+            result1 = subprocess.run(cmd1, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result1.returncode != 0:
+                self.logger.error(f"生成RSA私钥失败: {result1.stderr}")
+                print(f"生成RSA私钥失败: {result1.stderr}")
+                return False
+            
+            # 2. 生成证书请求文件（CSR）
+            csr_path = domain_dir / "server.csr"
+            input_data = f"11\n11\n11\n11\n11\n{cn}\n1111\n1111\n1111\n"
+            
+            cmd2 = ['openssl', 'req', '-new', '-key', str(key_path), '-out', str(csr_path)]
+            self.logger.debug(f"执行命令: {' '.join(cmd2)}")
+            result2 = subprocess.run(cmd2, 
+                                    input=input_data,
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result2.returncode != 0:
+                self.logger.error(f"生成CSR失败: {result2.stderr}")
+                print(f"生成CSR失败: {result2.stderr}")
+                return False
+            
+            # 3. 生成自签名证书
+            crt_path = domain_dir / "server.crt"
+            cmd3 = ['openssl', 'x509', '-req', '-in', str(csr_path), '-signkey', str(key_path), '-out', str(crt_path), '-days', '365']
+            self.logger.debug(f"执行命令: {' '.join(cmd3)}")
+            result3 = subprocess.run(cmd3, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result3.returncode != 0:
+                self.logger.error(f"生成自签名证书失败: {result3.stderr}")
+                print(f"生成自签名证书失败: {result3.stderr}")
+                return False
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"生成RSA证书时出现异常: {e}")
+            return False
+    
+    def _generate_ecc_certificate(self, domain_dir: Path, cn: str) -> bool:
+        """生成ECC类型的证书"""
+        try:
+            # 1. 生成椭圆曲线参数和私钥
+            key_path = domain_dir / "server.key"
+            # 使用prime256v1曲线，对应ECDSA-with-SHA256
+            cmd1 = ['openssl', 'ecparam', '-genkey', '-name', 'prime256v1', '-out', str(key_path)]
+            self.logger.debug(f"执行命令: {' '.join(cmd1)}")
+            result1 = subprocess.run(cmd1, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result1.returncode != 0:
+                self.logger.error(f"生成ECC私钥失败: {result1.stderr}")
+                print(f"生成ECC私钥失败: {result1.stderr}")
+                return False
+            
+            # 2. 生成证书请求文件（CSR）
+            csr_path = domain_dir / "server.csr"
+            input_data = f"11\n11\n11\n11\n11\n{cn}\n1111\n1111\n1111\n"
+            
+            cmd2 = ['openssl', 'req', '-new', '-key', str(key_path), '-out', str(csr_path)]
+            self.logger.debug(f"执行命令: {' '.join(cmd2)}")
+            result2 = subprocess.run(cmd2, 
+                                    input=input_data,
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result2.returncode != 0:
+                self.logger.error(f"生成ECC CSR失败: {result2.stderr}")
+                print(f"生成ECC CSR失败: {result2.stderr}")
+                return False
+            
+            # 3. 生成自签名证书，指定使用SHA256算法
+            crt_path = domain_dir / "server.crt"
+            cmd3 = ['openssl', 'x509', '-req', '-in', str(csr_path), '-signkey', str(key_path), '-out', str(crt_path), '-days', '365', '-sha256']
+            self.logger.debug(f"执行命令: {' '.join(cmd3)}")
+            result3 = subprocess.run(cmd3, 
+                                    stdout=subprocess.PIPE, 
+                                    stderr=subprocess.PIPE, 
+                                    text=True)
+            if result3.returncode != 0:
+                self.logger.error(f"生成ECC自签名证书失败: {result3.stderr}")
+                print(f"生成ECC自签名证书失败: {result3.stderr}")
+                return False
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"生成ECC证书时出现异常: {e}")
+            return False
 
 
 class NetworkScannerModule(BaseModule):
