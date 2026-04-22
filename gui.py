@@ -10,6 +10,7 @@ Date: 2026-03-10
 import sys
 import os
 import asyncio
+import logging
 from pathlib import Path
 from datetime import datetime
 
@@ -34,6 +35,19 @@ class WorkerSignals(QObject):
     log_message = pyqtSignal(str)
 
 
+class QtLogHandler(logging.Handler):
+
+    def __init__(self, signals):
+        super().__init__()
+        self.signals = signals
+
+    def emit(self, record):
+        try:
+            self.signals.log_message.emit(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
 class WorkerThread(QThread):
     """后台工作线程"""
     def __init__(self, module_manager, module_name, params):
@@ -46,6 +60,8 @@ class WorkerThread(QThread):
     def run(self):
         loop = None
         original_print = None
+        gui_log_handler = None
+        module_logger = None
         
         try:
             # 设置asyncio事件循环（解决pyshark在子线程中的事件循环问题）
@@ -61,11 +77,23 @@ class WorkerThread(QThread):
             def custom_print(*args, **kwargs):
                 message = ' '.join(str(arg) for arg in args)
                 self.signals.log_message.emit(message)
+                original_print(*args, **kwargs)
                 # 不调用original_print以避免控制台输出
             
             # 实际替换print函数
             import builtins
             builtins.print = custom_print
+            
+            module = self.module_manager.modules.get(self.module_name)
+            module_logger = getattr(module, 'logger', None)
+            if module_logger:
+                gui_log_handler = QtLogHandler(self.signals)
+                gui_log_handler.setLevel(logging.WARNING)
+                gui_log_handler.setFormatter(logging.Formatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S'
+                ))
+                module_logger.addHandler(gui_log_handler)
             
             # 执行模块
             success = self.module_manager.execute_module(self.module_name, self.params)
@@ -86,6 +114,10 @@ class WorkerThread(QThread):
                 pass
             
         finally:
+            if module_logger and gui_log_handler:
+                module_logger.removeHandler(gui_log_handler)
+                gui_log_handler.close()
+
             # 恢复原始print函数
             if original_print is not None:
                 import builtins
@@ -97,7 +129,7 @@ class SecurityTestGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("自动化安全测试平台 v1.0.2")
+        self.setWindowTitle("自动化安全测试平台 v1.1.0")
         self.setGeometry(100, 100, 1200, 800)
         
         # 初始化模块管理器
@@ -439,7 +471,7 @@ class SecurityTestGUI(QMainWindow):
 
 def get_version():
     """获取当前版本信息"""
-    return "自动化安全测试平台 v1.0.2"
+    return "自动化安全测试平台 v1.1.0"
 
 
 def main():
