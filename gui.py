@@ -129,7 +129,7 @@ class SecurityTestGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("自动化安全测试平台 v1.1.0")
+        self.setWindowTitle("自动化安全测试平台 v1.2.0")
         self.setGeometry(100, 100, 1200, 800)
         
         # 初始化模块管理器
@@ -471,7 +471,7 @@ class SecurityTestGUI(QMainWindow):
 
 def get_version():
     """获取当前版本信息"""
-    return "自动化安全测试平台 v1.1.0"
+    return "自动化安全测试平台 v1.2.0"
 
 
 def main():
