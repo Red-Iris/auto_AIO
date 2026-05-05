@@ -16,6 +16,13 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
 
+__version__ = "1.3.0"
+
+
+def get_version():
+    """获取当前版本信息"""
+    return f"自动化安全测试平台 v{__version__}"
+
 
 class BaseModule(ABC):
     """
@@ -66,6 +73,10 @@ class ModuleManager:
         self.modules[module.name()] = module
         print(f"模块已注册: {module.name()} - {module.description()}")
     
+    def list_modules(self):
+        """返回所有已注册模块的名称列表"""
+        return list(self.modules.keys())
+
     def execute_module(self, module_name: str, params: Dict[str, Any] = None) -> bool:
         """
         执行指定模块
@@ -126,16 +137,24 @@ class ProjectManager:
     def create_subdirectory(self, items: List[str]):
         """
         为列表中的每个项目创建子目录
-        
+
         Args:
             items (List[str]): 项目名称列表
         """
         for item in items:
-            # 替换可能不合法的字符
-            safe_item = str(item).replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
+            safe_item = sanitize_filename(item)
             item_dir = self.project_dir / safe_item
             item_dir.mkdir(exist_ok=True)
             print(f"创建子目录: {item_dir}")
+
+
+def sanitize_filename(name: str) -> str:
+    """将字符串中的非法文件名字符替换为下划线"""
+    illegal_chars = '/\\:*?"<>|'
+    result = str(name)
+    for char in illegal_chars:
+        result = result.replace(char, '_')
+    return result
 
 
 def get_default_tshark_path():
@@ -145,6 +164,7 @@ def get_default_tshark_path():
     possible_paths = [
         r"C:\Program Files\Wireshark\tshark.exe",
         r"C:\Program Files (x86)\Wireshark\tshark.exe",
+        r"C:\software\Wireshark\tshark.exe",
         r"C:\Wireshark\tshark.exe",
         r"E:\Wireshark\tshark.exe"  # 添加E盘路径
     ]

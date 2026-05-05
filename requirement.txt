@@ -11,5 +11,3 @@ PyQt5_sip==12.18.0
 pyshark==0.6
 pywin32-ctypes==0.2.3
 termcolor==3.3.0
-
-# 注意：tshark和nmap需要单独安装系统级工具

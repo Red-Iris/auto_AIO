@@ -10,13 +10,8 @@ Date: 2026-03-08
 """
 
 import os
-from core import ModuleManager
+from core import ModuleManager, get_version
 from modules import TLSAnalyzerModule
-
-
-def get_version():
-    """获取当前版本信息"""
-    return "自动化安全测试平台 v1.0.2"
 
 
 def demo_tls_analysis():
@@ -35,7 +30,7 @@ def demo_tls_analysis():
     print("\n演示: 如何调用TLS分析模块")
     print("-" * 40)
     print("基本使用方法:")
-    print("python test.py <pcap_file_path>")
+    print("python test.py tls <pcap_file_path>")
     print()
     print("查看版本信息:")
     print("python test.py --version")
@@ -44,7 +39,7 @@ def demo_tls_analysis():
     print("python test.py --help")
     print()
     print("指定输出目录:")
-    print("python test.py <pcap_file_path> --output-dir <output_dir>")
+    print("python test.py tls <pcap_file_path> --output-dir <output_dir>")
     print()
     
     # 演示参数设置
@@ -63,7 +58,7 @@ def demo_tls_analysis():
     if not success:
         print("\n注意: 因为示例文件不存在，所以执行失败，这是正常的。")
         print("当您有一个真实的.pcapng文件时，可以这样使用:")
-        print("python test.py your_capture.pcapng")
+        print("python test.py tls your_capture.pcapng")
     
     print("\n" + "="*60)
     print("平台特点:")

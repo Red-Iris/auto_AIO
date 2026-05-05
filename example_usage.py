@@ -7,13 +7,8 @@ Author: Reid Xu
 Date: 2026-03-08
 """
 
-from core import ModuleManager
+from core import ModuleManager, get_version
 from modules import TLSAnalyzerModule, NetworkScannerModule, VulnerabilityScannerModule
-
-
-def get_version():
-    """获取当前版本信息"""
-    return "自动化安全测试平台 v1.0.2"
 
 
 def main():

@@ -16,13 +16,8 @@ Date: 2026-03-09
 import os
 import sys
 import argparse
-from core import ModuleManager, get_default_tshark_path
+from core import ModuleManager, get_default_tshark_path, get_version
 from modules import TLSAnalyzerModule, NetworkScannerModule, VulnerabilityScannerModule
-
-
-def get_version():
-    """获取当前版本信息"""
-    return "自动化安全测试平台 v1.0.2"
 
 
 def main():

@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 #from typing import Dict, Any, Set
 from pathlib import Path
-from core import BaseModule, ProjectManager
+from core import BaseModule, ProjectManager, sanitize_filename
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict, Any,Set
 import ipaddress
@@ -29,39 +29,35 @@ def setup_logging(module_name: str, debug_mode: bool = False):
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-    
-    # 设置日志格式和处理器
-    log_filename = os.path.join(log_dir, f"{module_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-    
-    # 创建logger
-    logger = logging.getLogger(f"{module_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+    # 使用固定的logger名称，避免每次调用创建新logger实例
+    logger = logging.getLogger(module_name)
     logger.setLevel(logging.DEBUG)
-    
-    # 清除之前的处理器
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
+
+    # 防止重复添加handler（同一logger多次调用setup_logging时）
+    if logger.handlers:
+        return logger
+
     # 创建文件处理器
+    log_filename = os.path.join(log_dir, f"{module_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
-    
+
     # 创建格式器
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     file_handler.setFormatter(formatter)
-    
-    # 添加处理器到logger
     logger.addHandler(file_handler)
-    
+
     # 仅在调试模式下添加控制台处理器
     if debug_mode:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
-    
+
     return logger
 
 
@@ -387,7 +383,8 @@ class TLSAnalyzerModule(BaseModule):
             input=input_text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout
         )
 
@@ -651,9 +648,8 @@ class TLSAnalyzerModule(BaseModule):
             profile.san_dns = [host]
         return profile
 
-    # =========================
+
     # 证书画像提取
-    # =========================
 
     def _extract_server_cert_profile(self, domain: str, port: int) -> CertificateProfile:
         """
@@ -777,9 +773,8 @@ class TLSAnalyzerModule(BaseModule):
         cert_type = 'ecc' if profile.key_type == 'ec' else 'rsa'
         return profile.cn, cert_type
 
-    # =========================
+
     # 证书生成
-    # =========================
 
     def _build_addext_args(self, profile: CertificateProfile) -> List[str]:
         args = []
@@ -935,7 +930,7 @@ class TLSAnalyzerModule(BaseModule):
         all_success = True
 
         for domain, port in domain_port_map.items():
-            safe_domain = str(domain).replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
+            safe_domain = sanitize_filename(domain)
             domain_dir = project_dir / safe_domain
 
             if not domain_dir.exists():
@@ -964,27 +959,7 @@ class TLSAnalyzerModule(BaseModule):
 
         return all_success
 
-    # =========================
-    # 旧接口兼容包装
-    # =========================
 
-    # def _generate_rsa_certificate(self, domain_dir: Path, cn: str) -> bool:
-    #     """
-    #     兼容旧接口：固定生成 RSA-2048 / SHA256
-    #     """
-    #     profile = CertificateProfile(
-    #         key_type="rsa",
-    #         rsa_bits=2048,
-    #         digest="sha256",
-    #         cn=cn,
-    #         subject=f"/CN={cn}",
-    #         san_dns=[] if self._is_ip_address(cn) else [cn],
-    #         san_ip=[cn] if self._is_ip_address(cn) else [],
-    #         key_usage=["digitalSignature", "keyEncipherment"],
-    #         extended_key_usage=["serverAuth"],
-    #         basic_constraints="critical,CA:FALSE",
-    #     )
-    #     return self._generate_certificate_from_profile(domain_dir, profile)
     def _generate_rsa_certificate(self, domain_dir: Path, cn: str) -> bool:
         profile = CertificateProfile(
             key_type="rsa",
@@ -999,24 +974,6 @@ class TLSAnalyzerModule(BaseModule):
             basic_constraints="critical,CA:FALSE",
         )
         return self._generate_certificate_from_profile(domain_dir, profile)
-
-    # def _generate_ecc_certificate(self, domain_dir: Path, cn: str) -> bool:
-    #     """
-    #     兼容旧接口：固定生成 EC-P256 / SHA256
-    #     """
-    #     profile = CertificateProfile(
-    #         key_type="ec",
-    #         ec_curve="P-256",
-    #         digest="sha256",
-    #         cn=cn,
-    #         subject=f"/CN={cn}",
-    #         san_dns=[] if self._is_ip_address(cn) else [cn],
-    #         san_ip=[cn] if self._is_ip_address(cn) else [],
-    #         key_usage=["digitalSignature"],
-    #         extended_key_usage=["serverAuth"],
-    #         basic_constraints="critical,CA:FALSE",
-    #     )
-    #     return self._generate_certificate_from_profile(domain_dir, profile)
 
     def _generate_ecc_certificate(self, domain_dir: Path, cn: str) -> bool:
         profile = CertificateProfile(
@@ -1091,7 +1048,7 @@ class NetworkScannerModule(BaseModule):
                 # 使用CREATE_NO_WINDOW标志隐藏窗口
                 import subprocess
                 startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOWl
                 startupinfo.wShowWindow = subprocess.SW_HIDE
                 result = subprocess.run(['nmap', '--version'], 
                                         stdout=subprocess.PIPE, 

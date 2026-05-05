@@ -24,7 +24,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt5.QtGui import QFont, QIcon
 
 # 导入现有模块
-from core import ModuleManager, get_default_tshark_path
+from core import ModuleManager, get_default_tshark_path, get_version
 from modules import TLSAnalyzerModule, NetworkScannerModule, VulnerabilityScannerModule
 
 
@@ -129,7 +129,7 @@ class SecurityTestGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("自动化安全测试平台 v1.2.0")
+        self.setWindowTitle(get_version())
         self.setGeometry(100, 100, 1200, 800)
         
         # 初始化模块管理器
@@ -467,11 +467,6 @@ class SecurityTestGUI(QMainWindow):
             QMessageBox.information(self, "执行完成", "任务执行成功！")
         else:
             QMessageBox.critical(self, "执行失败", f"任务执行失败: {message}")
-
-
-def get_version():
-    """获取当前版本信息"""
-    return "自动化安全测试平台 v1.2.0"
 
 
 def main():

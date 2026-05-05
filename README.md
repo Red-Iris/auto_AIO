@@ -1,10 +1,10 @@
 # 自动化安全测试平台
 
-这是一个正在开发中的模块化的自动化安全测试平台，专门用于对带有WIFI、蓝牙或4G模块的IOT设备进行安全测试。（目前流量分析证书伪造模块相对成熟）
+这是一个模块化的自动化安全测试平台，专门用于对带有WIFI、蓝牙或4G模块的智能家居设备进行安全测试。
 
 ## 功能
 
-- 分析网络抓包文件(.pcapng)，提取TLS握手过程中的域名信息，并伪造证书
+- 分析网络抓包文件(.pcapng)，提取TLS握手过程中的域名信息
 - 使用nmap对目标设备进行全端口扫描
 - 自动生成按时间戳命名的项目目录
 - 根据提取的域名创建分类目录，便于后续分析
@@ -18,8 +18,7 @@ pip install -r requirements.txt
 
 注意：
 1. 使用pyshark库需要安装Wireshark或tshark
-2. 自动证书伪造功能需要安全openssl
-3. 使用网络扫描模块需要安装nmap
+2. 使用网络扫描模块需要安装nmap
 
 ## 使用方法
 
@@ -61,7 +60,7 @@ python test.py network 192.168.1.1 --output-dir ./scan_output
 
 **开箱即用的桌面应用！**
 
-1. **获取可执行文件**: ` AutoAIO_Security_Test.exe` 文件
+1. **获取可执行文件**: 联系项目维护者获取 `dist/AutoAIO_Security_Test.exe` 文件
 2. **直接运行**: 双击exe文件即可启动图形界面
 3. **无需安装**: 包含所有依赖，无需安装Python或其他组件
 4. **简单易用**: 
@@ -69,7 +68,6 @@ python test.py network 192.168.1.1 --output-dir ./scan_output
    - 输入目标IP地址
    - 点击执行按钮
    - 查看实时日志和结果
-5. **结果存储在exe文件当前目录下**
 
 ### 开发者：打包GUI版本
 
@@ -78,14 +76,6 @@ python test.py network 192.168.1.1 --output-dir ./scan_output
 ```bash
 # Windows系统
 build_gui.bat
-或手动
-pyinstaller --name AutoAIO_Security_Test --windowed --onefile gui.py
-
-# Linux系统
-pyinstaller --name AutoAIO_Security_Test --onefile --noconsole gui.py
-
-# MacOS系统
-pyinstaller --name AutoAIO_Security_Test --windowed --onefile --noconsole gui.py
 
 # 打包完成后，将dist目录下的所有文件分发给同事即可
 ```
@@ -129,6 +119,9 @@ logs/
 
 其中timestamp是当前日期时间，格式为 `YYYYMMDD_HHMMSS`。
 
+## 关于J文件的说明
+
+如果你在运行过程中产生了名为`J`的文件，这通常是由于在早期版本中命令行参数处理不当导致的。更新后的代码已经解决了这个问题。
 
 ## 跨平台支持
 
