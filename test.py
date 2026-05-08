@@ -54,10 +54,20 @@ def main():
     net_parser.add_argument('--xml-output', action='store_true', help='生成XML格式的扫描报告')
     net_parser.add_argument('--output-dir', '-o', help='输出目录路径（默认为当前目录）')
     
-    # 漏洞扫描模块（预留）
-    vuln_parser = subparsers.add_parser('vuln', help='漏洞扫描模块 - 扫描目标设备可能存在的安全漏洞（开发中）')
-    vuln_parser.add_argument('target', help='目标IP或域名')
+    # 漏洞扫描模块（cve-bin-tool集成）
+    vuln_parser = subparsers.add_parser('vuln', help='漏洞扫描模块 - 使用cve-bin-tool扫描固件/二进制文件中的已知漏洞')
+    vuln_parser.add_argument('target_path', help='待扫描的固件目录或二进制文件路径')
     vuln_parser.add_argument('--output-dir', '-o', help='输出目录路径（默认为当前目录）')
+    vuln_parser.add_argument('--format', '-f', choices=['csv', 'json', 'html', 'console', 'pdf'],
+                             default='csv', help='报告格式（默认: csv）')
+    vuln_parser.add_argument('--update-db', '-u', choices=['now', 'daily', 'never', 'latest'],
+                             default='daily', help='数据库更新策略（默认: daily）')
+    vuln_parser.add_argument('--nvd-api-key', help='NVD API密钥（提升API限速）')
+    vuln_parser.add_argument('--cvss', '-c', type=float, help='CVSS评分下限过滤（如 7.0）')
+    vuln_parser.add_argument('--severity', '-S', choices=['low', 'medium', 'high', 'critical'],
+                             help='严重级别过滤')
+    vuln_parser.add_argument('--offline', action='store_true', help='离线模式（不联网更新数据库）')
+    vuln_parser.add_argument('--cve-bin-tool', help='cve-bin-tool可执行文件、Python解释器或工具虚拟环境目录路径')
     
     args = parser.parse_args()
     
@@ -100,7 +110,18 @@ def main():
             params['xml_output'] = args.xml_output
             success = module_manager.execute_module('network_scanner', params)
         elif args.module == 'vuln':
-            params['target'] = args.target
+            params['target_path'] = args.target_path
+            params['output_format'] = args.format
+            params['update_db'] = args.update_db
+            if args.nvd_api_key:
+                params['nvd_api_key'] = args.nvd_api_key
+            if args.cvss:
+                params['cvss_limit'] = args.cvss
+            if args.severity:
+                params['severity_filter'] = args.severity
+            params['offline'] = args.offline
+            if args.cve_bin_tool:
+                params['cve_bin_tool_path'] = args.cve_bin_tool
             success = module_manager.execute_module('vulnerability_scanner', params)
         else:
             print(f"未知模块: {args.module}")

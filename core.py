@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
 
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 
 
 def get_version():
@@ -165,6 +165,7 @@ def get_default_tshark_path():
         r"C:\Program Files\Wireshark\tshark.exe",
         r"C:\Program Files (x86)\Wireshark\tshark.exe",
         r"C:\software\Wireshark\tshark.exe",
+        r"C:\software\wireshark\tshark.exe",
         r"C:\Wireshark\tshark.exe",
         r"E:\Wireshark\tshark.exe"  # 添加E盘路径
     ]

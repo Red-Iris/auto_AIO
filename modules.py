@@ -13,6 +13,8 @@ import pyshark
 import subprocess
 import json
 import logging
+import importlib.util
+from collections import deque
 from datetime import datetime
 #from typing import Dict, Any, Set
 from pathlib import Path
@@ -128,8 +130,17 @@ class TLSAnalyzerModule(BaseModule):
         self.logger.info(f"开始分析PCAP文件: {pcap_file}")
         print(f"开始分析PCAP文件: {pcap_file}")
 
-        # 提取TLS域名和端口信息
-        domain_port_map = self._extract_tls_domains_and_ports(pcap_file, tshark_path)
+        # 提取TLS域名和端口信息（含目的IP）
+        raw_domain_port_map = self._extract_tls_domains_and_ports(pcap_file, tshark_path)
+
+        # 分离合法域名和非域名SNI标识
+        domain_port_map = {}       # {sni: port}
+        non_domain_snis = {}       # {sni: {'port': p, 'dst_ip': ip}}
+        for sni, info in raw_domain_port_map.items():
+            if self._is_valid_domain(sni):
+                domain_port_map[sni] = info['port']
+            else:
+                non_domain_snis[sni] = info
 
         # 提取HTTP明文传输的URL
         http_urls = self._extract_http_urls(pcap_file, tshark_path)
@@ -137,10 +148,50 @@ class TLSAnalyzerModule(BaseModule):
         project_manager = None
         project_dir = None
 
-        # 只要有 TLS 域名或 HTTP URL，就创建项目目录
-        if domain_port_map or http_urls:
+        # 只要有 TLS 域名/非域名SNI 或 HTTP URL，就创建项目目录
+        if domain_port_map or non_domain_snis or http_urls:
             project_manager = ProjectManager(params.get('output_dir'))
             project_dir = project_manager.create_project_directory()
+
+        # 处理非域名SNI标识（尝试通过目的IP获取证书画像）
+        if non_domain_snis:
+            self.logger.info(f"发现 {len(non_domain_snis)} 个非域名SNI标识")
+            print(f"发现 {len(non_domain_snis)} 个非域名SNI标识:")
+            for sni, info in non_domain_snis.items():
+                dst_ip = info.get('dst_ip')
+                port = info['port']
+                if dst_ip:
+                    print(f"  - {sni} (端口: {port}, 目的IP: {dst_ip}) — 将通过IP提取真实证书")
+                else:
+                    print(f"  - {sni} (端口: {port}, 目的IP未知) — 无法获取证书")
+
+            # 记录非域名SNI到文件
+            sni_dir = project_dir / "non_domain_sni"
+            sni_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sni_file = sni_dir / f"non_domain_sni_{timestamp}.txt"
+            with open(sni_file, 'w', encoding='utf-8') as f:
+                f.write("非域名SNI标识列表\n")
+                f.write("=" * 50 + "\n\n")
+                for idx, (sni, info) in enumerate(non_domain_snis.items(), 1):
+                    f.write(f"{idx}. SNI: {sni}  端口: {info['port']}  目的IP: {info.get('dst_ip', '未知')}\n")
+                    if info.get('dst_ip'):
+                        f.write(f"   说明: 将通过IP {info['dst_ip']} 连接获取真实证书画像\n\n")
+                    else:
+                        f.write(f"   说明: 目的IP未知，无法获取证书画像\n\n")
+            self.logger.info(f"非域名SNI记录已保存到: {sni_file}")
+            print(f"非域名SNI记录已保存到: {sni_file}")
+
+            # 对非域名SNI尝试通过IP进行证书生成
+            if generate_certificates:
+                cert_type_display = certificate_type.upper() if certificate_type != 'auto' else '自动检测'
+                self.logger.info(f"开始对非域名SNI通过IP进行{cert_type_display}证书生成...")
+                print(f"开始对非域名SNI通过IP进行{cert_type_display}证书生成...")
+                self._generate_certificates_for_non_domain_snis(
+                    non_domain_snis,
+                    project_manager.project_dir,
+                    certificate_type
+                )
 
         if not domain_port_map:
             self.logger.warning("未发现TLS握手包中的域名信息")
@@ -324,12 +375,13 @@ class TLSAnalyzerModule(BaseModule):
             f"/emailAddress=test@example.com"
         )
 
-    def _extract_tls_domains_and_ports(self, pcap_file_path: str, tshark_path: str = None) -> Dict[str, int]:
+    def _extract_tls_domains_and_ports(self, pcap_file_path: str, tshark_path: str = None) -> Dict[str, dict]:
         """
-        从pcap文件中提取TLS握手包中的服务器名称和对应的端口
+        从pcap文件中提取TLS握手包中的服务器名称、端口和目的IP
+        返回格式: {sni: {'port': int, 'dst_ip': str|None}}
         """
         self.logger.info(f"开始提取TLS域名和端口，文件: {pcap_file_path}")
-        domain_port_map = {}
+        result_map = {}
 
         try:
             if tshark_path:
@@ -351,13 +403,14 @@ class TLSAnalyzerModule(BaseModule):
                 try:
                     if hasattr(packet, 'tls') and hasattr(packet.tls, 'handshake_extensions_server_name'):
                         server_name = packet.tls.handshake_extensions_server_name
+                        dst_port = 8883
                         if hasattr(packet, 'tcp') and hasattr(packet.tcp, 'dstport'):
                             dst_port = int(packet.tcp.dstport)
-                            domain_port_map[server_name] = dst_port
-                            self.logger.debug(f"提取到域名: {server_name}, 端口: {dst_port}")
-                        else:
-                            domain_port_map[server_name] = 8883
-                            self.logger.debug(f"提取到域名: {server_name}, 端口未知，使用默认8883")
+                        dst_ip = None
+                        if hasattr(packet, 'ip') and hasattr(packet.ip, 'dst'):
+                            dst_ip = packet.ip.dst
+                        result_map[server_name] = {'port': dst_port, 'dst_ip': dst_ip}
+                        self.logger.debug(f"提取到SNI: {server_name}, 端口: {dst_port}, 目的IP: {dst_ip}")
                 except AttributeError:
                     continue
                 except Exception as e:
@@ -369,8 +422,8 @@ class TLSAnalyzerModule(BaseModule):
         except Exception as e:
             self.logger.error(f"读取PCAP文件时出现错误: {e}")
 
-        self.logger.info(f"共提取到 {len(domain_port_map)} 个域名-端口映射")
-        return domain_port_map
+        self.logger.info(f"共提取到 {len(result_map)} 个SNI条目")
+        return result_map
 
     # =========================
     # 通用命令/解析辅助函数
@@ -394,6 +447,33 @@ class TLSAnalyzerModule(BaseModule):
             return True
         except ValueError:
             return False
+
+    def _is_valid_domain(self, name: str) -> bool:
+        """
+        判断SNI值是否为合法的DNS域名。
+
+        合法的域名必须:
+        - 包含至少一个点 (.)
+        - 不包含空格
+        - 每个标签长度为1-63字符
+        - 总长度不超过253字符
+        - 仅包含字母、数字、连字符和点
+        """
+        if not name or ' ' in name:
+            return False
+        if '.' not in name:
+            return False
+        if len(name) > 253:
+            return False
+        label_pattern = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$')
+        wildcard_pattern = re.compile(r'^\*$')
+        labels = name.split('.')
+        for label in labels:
+            if len(label) < 1 or len(label) > 63:
+                return False
+            if not label_pattern.match(label) and not wildcard_pattern.match(label):
+                return False
+        return True
 
     def _extract_first_pem_certificate(self, text: str) -> Optional[str]:
         m = re.search(
@@ -960,6 +1040,61 @@ class TLSAnalyzerModule(BaseModule):
         return all_success
 
 
+    def _generate_certificates_for_non_domain_snis(
+        self, non_domain_snis: Dict[str, dict], project_dir: Path, cert_type: str = 'auto'
+    ) -> None:
+        """
+        对非域名SNI标识，通过目的IP连接服务器获取真实证书画像并生成伪造证书。
+        如果无法通过IP获取证书，则使用SNI作为CN的默认画像。
+        """
+        try:
+            result = self._run_cmd(['openssl', 'version'])
+            if result.returncode != 0:
+                self.logger.error(f"OpenSSL未安装或不可用，无法为非域名SNI生成证书: {result.stderr}")
+                print("错误: OpenSSL未安装或不可用，无法为非域名SNI生成证书文件")
+                return
+        except FileNotFoundError:
+            self.logger.error("OpenSSL未安装或不在系统PATH中，无法为非域名SNI生成证书")
+            print("错误: OpenSSL未安装或不在系统PATH中，无法为非域名SNI生成证书文件")
+            return
+
+        for sni, info in non_domain_snis.items():
+            port = info['port']
+            dst_ip = info.get('dst_ip')
+            safe_sni = sanitize_filename(sni)
+            sni_dir = project_dir / safe_sni
+            sni_dir.mkdir(exist_ok=True)
+
+            profile = None
+
+            # 优先通过目的IP获取真实证书画像
+            if dst_ip:
+                self.logger.info(f"通过IP {dst_ip}:{port} 获取 {sni} 的真实证书画像...")
+                print(f"通过IP {dst_ip}:{port} 获取 {sni} 的真实证书画像...")
+                try:
+                    profile = self._extract_server_cert_profile(dst_ip, port)
+                except Exception as e:
+                    self.logger.warning(f"通过IP获取证书画像失败: {e}")
+                    print(f"  警告: 通过IP获取证书画像失败: {e}")
+
+            # 回退: 使用SNI作为CN的默认画像
+            if profile is None:
+                self.logger.info(f"无法获取 {sni} 的证书画像，使用默认画像（CN={sni}）")
+                print(f"  无法获取 {sni} 的证书画像，使用默认画像（CN={sni}）")
+                profile = self._default_profile_for_target(sni)
+
+            profile = self._apply_cert_type_override(profile, cert_type)
+            self.logger.info(f"为 {sni} 使用画像: {self._profile_summary(profile)}")
+            print(f"  为 {sni} 使用画像: {self._profile_summary(profile)}")
+
+            success = self._generate_certificate_from_profile(sni_dir, profile)
+            if success:
+                self.logger.info(f"成功为 {sni} 生成证书文件")
+                print(f"  成功为 {sni} 生成证书文件")
+            else:
+                self.logger.warning(f"为 {sni} 生成证书文件失败")
+                print(f"  警告: 为 {sni} 生成证书文件失败")
+
     def _generate_rsa_certificate(self, domain_dir: Path, cn: str) -> bool:
         profile = CertificateProfile(
             key_type="rsa",
@@ -1048,7 +1183,7 @@ class NetworkScannerModule(BaseModule):
                 # 使用CREATE_NO_WINDOW标志隐藏窗口
                 import subprocess
                 startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOWl
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
                 result = subprocess.run(['nmap', '--version'], 
                                         stdout=subprocess.PIPE, 
@@ -1185,29 +1320,359 @@ class NetworkScannerModule(BaseModule):
 
 class VulnerabilityScannerModule(BaseModule):
     """
-    漏洞扫描模块（预留接口，待实现）
+    漏洞扫描模块 - 使用cve-bin-tool扫描IoT设备固件/二进制文件中的已知漏洞(CVE)
     """
-    
-    def __init__(self, debug_mode: bool = False):
+
+    def __init__(self, debug_mode: bool = False, output_callback=None):
         self.debug_mode = debug_mode
         self.logger = setup_logging('vulnerability_scanner', debug_mode)
-    
+        self.output_callback = output_callback
+        self.stream_head_lines = 120
+        self.stream_tail_lines = 120
+
     def name(self) -> str:
         return "vulnerability_scanner"
-    
+
     def description(self) -> str:
-        return "漏洞扫描模块 - 扫描目标设备可能存在的安全漏洞"
-    
+        return "漏洞扫描模块 - 使用cve-bin-tool扫描固件/二进制文件中的已知漏洞"
+
+    @staticmethod
+    def _normalize_cve_bin_tool_path(tool_path: str) -> Optional[List[str]]:
+        """把用户配置的cve-bin-tool路径转换为可执行命令前缀"""
+        if not tool_path:
+            return None
+
+        normalized = os.path.expandvars(os.path.expanduser(tool_path.strip().strip('"')))
+        path = Path(normalized)
+        exe_name = 'cve-bin-tool.exe' if sys.platform == 'win32' else 'cve-bin-tool'
+
+        if path.is_dir():
+            candidates = [
+                path / exe_name,
+                path / 'Scripts' / 'cve-bin-tool.exe',
+                path / 'bin' / 'cve-bin-tool',
+            ]
+            for candidate in candidates:
+                if candidate.is_file():
+                    return [str(candidate)]
+            return None
+
+        if path.is_file():
+            lower_name = path.name.lower()
+            if lower_name in ('python.exe', 'python', 'python3'):
+                return [str(path), '-m', 'cve_bin_tool.cli']
+            return [str(path)]
+
+        return None
+
+    @staticmethod
+    def _find_cve_bin_tool(configured_path: str = None) -> Optional[List[str]]:
+        """查找cve-bin-tool可执行文件，返回命令前缀列表，找不到返回None"""
+        import shutil
+        exe_name = 'cve-bin-tool.exe' if sys.platform == 'win32' else 'cve-bin-tool'
+        is_frozen = getattr(sys, 'frozen', False)
+        app_dir = Path(sys.executable).resolve().parent if is_frozen else Path(__file__).resolve().parent
+
+        # 1. 用户显式指定：GUI/CLI参数优先，其次环境变量
+        explicit_path = configured_path or os.environ.get('AUTOAIO_CVE_BIN_TOOL')
+        explicit_cmd = VulnerabilityScannerModule._normalize_cve_bin_tool_path(explicit_path)
+        if explicit_cmd:
+            return explicit_cmd
+
+        # 2. 打包分发时支持把工具放到程序目录或tools子目录
+        bundled_candidates = [
+            app_dir / 'tools' / exe_name,
+            app_dir / 'tools' / 'cve-venv' / 'Scripts' / 'cve-bin-tool.exe',
+            app_dir / 'tools' / 'cve-venv' / 'bin' / 'cve-bin-tool',
+            app_dir / 'tools' / '.venv' / 'Scripts' / 'cve-bin-tool.exe',
+            app_dir / 'tools' / '.venv' / 'bin' / 'cve-bin-tool',
+            app_dir / exe_name,
+            app_dir / '.venv' / 'Scripts' / 'cve-bin-tool.exe',
+            app_dir / '.venv' / 'bin' / 'cve-bin-tool',
+            app_dir.parent / 'tools' / exe_name,
+            app_dir.parent / 'tools' / 'cve-venv' / 'Scripts' / 'cve-bin-tool.exe',
+            app_dir.parent / 'tools' / 'cve-venv' / 'bin' / 'cve-bin-tool',
+        ]
+        for candidate in bundled_candidates:
+            if candidate.is_file():
+                return [str(candidate)]
+
+        # 3. 直接找 exe (PATH 中或绝对路径)
+        found = shutil.which('cve-bin-tool')
+        if found:
+            return [found]
+
+        # 4. 源码运行时尝试当前Python环境里的脚本入口
+        candidates = [
+            os.path.join(sys.prefix, 'Scripts', 'cve-bin-tool.exe'),
+            os.path.join(sys.prefix, 'bin', 'cve-bin-tool'),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return [p]
+
+        # 5. 只有源码运行时才允许 python -m 兜底；PyInstaller里sys.executable是本程序exe
+        if not is_frozen and importlib.util.find_spec('cve_bin_tool.cli'):
+            return [sys.executable, '-m', 'cve_bin_tool.cli']
+
+        return None
+
+    def _emit(self, message: str):
+        """统一输出：同时发往logger、print和output_callback"""
+        self.logger.info(message)
+        print(message)
+        if self.output_callback:
+            self.output_callback(message)
+
+    def _stream_command(
+        self,
+        cmd: list,
+        timeout: int = 600,
+        env: dict = None,
+        raw_log_file: Optional[Path] = None,
+        head_lines: Optional[int] = None,
+        tail_lines: Optional[int] = None
+    ) -> Tuple[int, str, int, int]:
+        """执行命令并限制GUI实时输出，返回(returncode, 输出预览, 总行数, 省略行数)"""
+        head_limit = self.stream_head_lines if head_lines is None else max(0, head_lines)
+        tail_limit = self.stream_tail_lines if tail_lines is None else max(0, tail_lines)
+        head_output = []
+        tail_output = deque(maxlen=tail_limit)
+        total_lines = 0
+        omitted_notice_emitted = False
+        raw_log = None
+        try:
+            startupinfo = None
+            if sys.platform == 'win32':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+
+            # 如果指定了 env，合并到当前环境变量（子进程继承）
+            proc_env = os.environ.copy()
+            if env:
+                proc_env.update(env)
+
+            if raw_log_file:
+                raw_log_file.parent.mkdir(parents=True, exist_ok=True)
+                raw_log = open(raw_log_file, 'w', encoding='utf-8', errors='replace')
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                encoding='utf-8',
+                errors='replace',
+                text=True,
+                startupinfo=startupinfo,
+                env=proc_env
+            )
+            for line in proc.stdout:
+                line = line.rstrip('\n\r')
+                if line:
+                    total_lines += 1
+                    if raw_log:
+                        raw_log.write(line + '\n')
+
+                    if total_lines <= head_limit:
+                        head_output.append(line)
+                        self._emit(line)
+                    else:
+                        if tail_limit > 0:
+                            tail_output.append(line)
+                        if not omitted_notice_emitted:
+                            self._emit(
+                                f"[漏洞扫描日志过多，GUI仅显示前{head_limit}行和最后{tail_limit}行；"
+                                f"完整输出保存至: {raw_log_file}]"
+                            )
+                            omitted_notice_emitted = True
+            proc.wait(timeout=timeout)
+
+            omitted_lines = max(0, total_lines - head_limit - len(tail_output))
+            if omitted_lines > 0:
+                self._emit(f"[已省略中间 {omitted_lines} 行 cve-bin-tool 输出]")
+                self._emit(f"[最后 {len(tail_output)} 行输出]")
+            if total_lines > head_limit:
+                for line in tail_output:
+                    self._emit(line)
+
+            output_preview = '\n'.join(head_output)
+            if omitted_lines > 0:
+                output_preview += f"\n...[已省略中间 {omitted_lines} 行，完整输出见 {raw_log_file}]...\n"
+            if tail_output:
+                if output_preview and not output_preview.endswith('\n'):
+                    output_preview += '\n'
+                output_preview += '\n'.join(tail_output)
+            return proc.returncode, output_preview, total_lines, omitted_lines
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self._emit(f"扫描超时（{timeout}秒），已终止")
+            return -1, '\n'.join(head_output + list(tail_output)), total_lines, max(0, total_lines - len(head_output) - len(tail_output))
+        except FileNotFoundError:
+            return -2, '', total_lines, 0
+        except Exception as e:
+            self._emit(f"执行命令时发生异常: {e}")
+            return -3, '\n'.join(head_output + list(tail_output)), total_lines, max(0, total_lines - len(head_output) - len(tail_output))
+        finally:
+            if raw_log:
+                raw_log.close()
+
     def execute(self, params: Dict[str, Any]) -> bool:
         """
         执行漏洞扫描
-        
+
         Args:
             params (Dict[str, Any]): 参数字典
-            
+                - target_path: 待扫描的固件目录或二进制文件路径
+                - output_format: 报告格式 ('csv', 'json', 'html', 'console', 'pdf'，默认 'csv')
+                - nvd_api_key: NVD API密钥（可选，提升API限速）
+                - update_db: 数据库更新策略 ('now', 'daily', 'never', 'latest'，默认 'daily')
+                - cvss_limit: CVSS评分下限过滤（如 7.0 仅显示高危以上）
+                - severity_filter: 严重级别过滤 ('low', 'medium', 'high', 'critical')
+                - offline: 离线模式 (bool，默认False)
+                - output_dir: 输出目录路径（可选）
+
         Returns:
             bool: 是否成功执行
         """
-        self.logger.warning("漏洞扫描模块尚未实现")
-        print("漏洞扫描模块尚未实现")
-        return False
+        target_path = params.get('target_path')
+        output_format = params.get('output_format', 'csv')
+        nvd_api_key = params.get('nvd_api_key', None)
+        update_db = params.get('update_db', 'daily')
+        cvss_limit = params.get('cvss_limit', None)
+        severity_filter = params.get('severity_filter', None)
+        offline = params.get('offline', False)
+
+        if not target_path:
+            self.logger.error("缺少参数 'target_path'")
+            print("错误: 缺少参数 'target_path' — 请指定待扫描的固件目录或文件路径")
+            return False
+
+        if not os.path.exists(target_path):
+            self.logger.error(f"扫描目标不存在: {target_path}")
+            print(f"错误: 扫描目标不存在 '{target_path}'")
+            return False
+
+        # 查找 cve-bin-tool（返回命令前缀列表）
+        cve_bin_tool_cmd = self._find_cve_bin_tool(params.get('cve_bin_tool_path'))
+        if not cve_bin_tool_cmd:
+            message = (
+                "错误: 未找到 cve-bin-tool。请安装后加入PATH，或在漏洞扫描页指定工具路径，"
+                "也可以设置环境变量 AUTOAIO_CVE_BIN_TOOL，或将 cve-bin-tool.exe 放到程序目录的 tools 子目录。"
+            )
+            self.logger.error(message)
+            print(message)
+            return False
+
+        self._emit(f"cve-bin-tool 命令: {' '.join(cve_bin_tool_cmd)}")
+        self._emit(f"扫描目标: {target_path}")
+        self._emit(f"报告格式: {output_format}")
+        self._emit("=" * 60)
+
+        # 创建项目目录
+        project_manager = ProjectManager(params.get('output_dir'))
+        project_dir = project_manager.create_project_directory()
+
+        safe_target = sanitize_filename(os.path.basename(target_path.rstrip('/\\')))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        vuln_dir = project_dir / f"vuln_scan_{safe_target}_{timestamp}"
+        vuln_dir.mkdir(exist_ok=True)
+
+        output_file = vuln_dir / f"cve_report_{timestamp}.{output_format}"
+        summary_file = vuln_dir / f"scan_summary_{timestamp}.txt"
+        raw_output_file = vuln_dir / f"cve_raw_output_{timestamp}.log"
+
+        # 构建 cve-bin-tool 命令
+        cmd = list(cve_bin_tool_cmd)
+
+        # 输出格式和文件
+        cmd += ['-f', output_format]
+        cmd += ['-o', str(output_file)]
+
+        # 日志级别
+        cmd += ['-l', 'debug' if self.debug_mode else 'info']
+
+        # 数据库更新策略
+        if update_db and update_db != 'daily':
+            cmd += ['-u', update_db]
+
+        # NVD API Key
+        if nvd_api_key:
+            cmd += ['--nvd-api-key', nvd_api_key]
+
+        # CVSS限制
+        if cvss_limit is not None:
+            cmd += ['-c', str(cvss_limit)]
+
+        # 严重级别过滤
+        if severity_filter:
+            cmd += ['-S', severity_filter]
+
+        # 离线模式
+        if offline:
+            cmd += ['--offline']
+
+        # 详细CVE描述
+        if output_format in ('csv', 'json', 'json2'):
+            cmd += ['--detailed']
+
+        # 扫描目标（位置参数放最后）
+        cmd.append(target_path)
+
+        self._emit(f"执行命令: {' '.join(cmd)}")
+        self._emit("")
+
+        # 执行扫描（实时输出）
+        # 注入 AIOHTTP_NO_EXTENSIONS=1，禁用 aiodns/pycares 异步DNS，
+        # 强制 aiohttp 使用系统默认 DNS 解析器，避免 Windows 上 DNS 解析失败
+        vuln_env = {'AIOHTTP_NO_EXTENSIONS': '1'}
+        head_lines = int(params.get('log_head_lines', self.stream_head_lines))
+        tail_lines = int(params.get('log_tail_lines', self.stream_tail_lines))
+        returncode, output_preview, total_output_lines, omitted_output_lines = self._stream_command(
+            cmd,
+            env=vuln_env,
+            raw_log_file=raw_output_file,
+            head_lines=head_lines,
+            tail_lines=tail_lines
+        )
+
+        # 写入扫描摘要
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            f.write(f"漏洞扫描摘要\n")
+            f.write(f"=" * 60 + "\n\n")
+            f.write(f"扫描时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"扫描目标: {target_path}\n")
+            f.write(f"报告格式: {output_format}\n")
+            f.write(f"执行命令: {' '.join(cmd)}\n")
+            f.write(f"返回码: {returncode}\n\n")
+            f.write(f"输出文件: {output_file}\n")
+            f.write(f"原始输出已保存在: {raw_output_file}\n")
+            f.write(f"cve-bin-tool输出总行数: {total_output_lines}\n")
+            f.write(f"GUI省略输出行数: {omitted_output_lines}\n")
+
+        self._emit("")
+        self._emit("=" * 60)
+
+        if returncode == -2:
+            self._emit(f"扫描失败: cve-bin-tool 未找到")
+            print(f"错误: cve-bin-tool 未找到")
+            return False
+        elif returncode == 0:
+            self._emit(f"扫描完成，未发现已知CVE，报告已保存至:")
+            self._emit(f"  报告文件: {output_file}")
+            self._emit(f"  摘要文件: {summary_file}")
+            self._emit(f"  原始输出: {raw_output_file}")
+            return True
+        elif returncode == 1:
+            self._emit(f"扫描完成，发现已知CVE（cve-bin-tool返回码: 1）")
+            self._emit(f"  报告文件: {output_file}")
+            self._emit(f"  摘要文件: {summary_file}")
+            self._emit(f"  原始输出: {raw_output_file}")
+            return True
+        else:
+            self._emit(f"扫描完成但存在错误（返回码: {returncode}）")
+            self._emit(f"报告已保存至: {output_file}")
+            self._emit(f"完整原始输出已保存至: {raw_output_file}")
+            if self.debug_mode:
+                self._emit(f"输出预览:\n{output_preview}")
+            return False

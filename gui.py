@@ -18,7 +18,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog,
     QTabWidget, QGroupBox, QCheckBox, QMessageBox, QProgressBar,
-    QTreeWidget, QTreeWidgetItem, QSplitter, QStatusBar, QRadioButton
+    QTreeWidget, QTreeWidgetItem, QSplitter, QStatusBar, QRadioButton,
+    QComboBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt5.QtGui import QFont, QIcon
@@ -322,12 +323,120 @@ class SecurityTestGUI(QMainWindow):
         """创建漏洞扫描标签页"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        
-        label = QLabel("漏洞扫描模块正在开发中...")
-        label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet("font-size: 16px; color: gray;")
-        layout.addWidget(label)
-        
+
+        # 扫描目标组
+        target_group = QGroupBox("扫描目标")
+        target_layout = QHBoxLayout()
+
+        self.vuln_target_input = QLineEdit()
+        self.vuln_target_input.setPlaceholderText("选择固件目录或二进制文件（支持拖拽）")
+        self.vuln_target_input.setAcceptDrops(True)
+
+        vuln_target_browse = QPushButton("浏览目录...")
+        vuln_target_browse.clicked.connect(self.browse_vuln_dir)
+        vuln_target_file_browse = QPushButton("浏览文件...")
+        vuln_target_file_browse.clicked.connect(self.browse_vuln_file)
+
+        target_layout.addWidget(self.vuln_target_input)
+        target_layout.addWidget(vuln_target_browse)
+        target_layout.addWidget(vuln_target_file_browse)
+        target_group.setLayout(target_layout)
+        layout.addWidget(target_group)
+
+        # 扫描选项组
+        options_group = QGroupBox("扫描选项")
+        options_layout = QVBoxLayout()
+
+        # 第一行：报告格式 + 更新策略
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("报告格式:"))
+        self.vuln_format_combo = QComboBox()
+        self.vuln_format_combo.addItems(['csv', 'json', 'html', 'console', 'pdf'])
+        self.vuln_format_combo.setCurrentText('csv')
+        row1.addWidget(self.vuln_format_combo)
+
+        row1.addWidget(QLabel("数据库更新:"))
+        self.vuln_update_combo = QComboBox()
+        self.vuln_update_combo.addItems(['daily', 'now', 'never', 'latest'])
+        self.vuln_update_combo.setCurrentText('daily')
+        self.vuln_update_combo.setToolTip("daily=按日更新; now=立即更新; never=不更新; latest=仅最新CVE")
+        row1.addWidget(self.vuln_update_combo)
+        options_layout.addLayout(row1)
+
+        # 第二行：CVSS阈值 + 严重级别
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("CVSS下限:"))
+        self.vuln_cvss_input = QLineEdit()
+        self.vuln_cvss_input.setPlaceholderText("如 7.0（留空=不限）")
+        self.vuln_cvss_input.setMaximumWidth(80)
+        row2.addWidget(self.vuln_cvss_input)
+
+        row2.addWidget(QLabel("严重级别:"))
+        self.vuln_severity_combo = QComboBox()
+        self.vuln_severity_combo.addItems(['(不限)', 'low', 'medium', 'high', 'critical'])
+        self.vuln_severity_combo.setCurrentText('(不限)')
+        row2.addWidget(self.vuln_severity_combo)
+
+        row2.addStretch()
+        options_layout.addLayout(row2)
+
+        # 第三行：NVD API Key + 复选框
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("NVD API Key:"))
+        self.vuln_apikey_input = QLineEdit()
+        self.vuln_apikey_input.setPlaceholderText("（可选，提升API限速）")
+        row3.addWidget(self.vuln_apikey_input)
+        options_layout.addLayout(row3)
+
+        row4 = QHBoxLayout()
+        self.vuln_offline_checkbox = QCheckBox("离线模式（不联网更新数据库）")
+        row4.addWidget(self.vuln_offline_checkbox)
+        self.vuln_detailed_checkbox = QCheckBox("详细CVE描述")
+        self.vuln_detailed_checkbox.setChecked(True)
+        row4.addWidget(self.vuln_detailed_checkbox)
+        row4.addStretch()
+        options_layout.addLayout(row4)
+
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+
+        # cve-bin-tool路径组
+        tool_group = QGroupBox("cve-bin-tool路径 (可选)")
+        tool_layout = QHBoxLayout()
+
+        self.vuln_tool_input = QLineEdit()
+        self.vuln_tool_input.setPlaceholderText("留空=自动查找PATH/tools目录/环境变量AUTOAIO_CVE_BIN_TOOL")
+
+        vuln_tool_browse = QPushButton("浏览...")
+        vuln_tool_browse.clicked.connect(self.browse_vuln_tool_path)
+
+        tool_layout.addWidget(self.vuln_tool_input)
+        tool_layout.addWidget(vuln_tool_browse)
+        tool_group.setLayout(tool_layout)
+        layout.addWidget(tool_group)
+
+        # 输出目录组
+        output_group = QGroupBox("输出目录 (可选)")
+        output_layout = QHBoxLayout()
+
+        self.vuln_output_input = QLineEdit()
+        self.vuln_output_input.setPlaceholderText("默认为当前目录")
+
+        vuln_output_browse = QPushButton("浏览...")
+        vuln_output_browse.clicked.connect(self.browse_vuln_output_dir)
+
+        output_layout.addWidget(self.vuln_output_input)
+        output_layout.addWidget(vuln_output_browse)
+        output_group.setLayout(output_layout)
+        layout.addWidget(output_group)
+
+        # 执行按钮
+        execute_btn = QPushButton("开始漏洞扫描")
+        execute_btn.clicked.connect(self.execute_vulnerability_scan)
+        execute_btn.setStyleSheet("background-color: #FF9800; color: white; font-size: 14px;")
+        layout.addWidget(execute_btn)
+
+        layout.addStretch()
         return tab
         
     def browse_tls_file(self):
@@ -362,6 +471,93 @@ class SecurityTestGUI(QMainWindow):
         dir_path = QFileDialog.getExistingDirectory(self, "选择输出目录")
         if dir_path:
             self.network_output_input.setText(dir_path)
+
+    def browse_vuln_dir(self):
+        """浏览漏洞扫描目标目录"""
+        dir_path = QFileDialog.getExistingDirectory(self, "选择固件目录")
+        if dir_path:
+            self.vuln_target_input.setText(dir_path)
+
+    def browse_vuln_file(self):
+        """浏览漏洞扫描目标文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择固件或二进制文件", "",
+            "All Files (*);;Firmware Files (*.bin *.img *.fw);;Binary Files (*.so *.dll *.exe)"
+        )
+        if file_path:
+            self.vuln_target_input.setText(file_path)
+
+    def browse_vuln_output_dir(self):
+        """浏览漏洞扫描输出目录"""
+        dir_path = QFileDialog.getExistingDirectory(self, "选择输出目录")
+        if dir_path:
+            self.vuln_output_input.setText(dir_path)
+
+    def browse_vuln_tool_path(self):
+        """浏览cve-bin-tool路径"""
+        if sys.platform == "win32":
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "选择cve-bin-tool或Python解释器", "",
+                "Executable Files (*.exe);;All Files (*)"
+            )
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "选择cve-bin-tool或Python解释器", "/usr/bin", "All Files (*)"
+            )
+        if file_path:
+            self.vuln_tool_input.setText(file_path)
+
+    def execute_vulnerability_scan(self):
+        """执行漏洞扫描"""
+        target_path = self.vuln_target_input.text().strip()
+        if not target_path:
+            QMessageBox.warning(self, "输入错误", "请选择待扫描的固件目录或文件")
+            return
+
+        if not os.path.exists(target_path):
+            QMessageBox.warning(self, "路径错误", "指定的扫描目标不存在")
+            return
+
+        params = {'target_path': target_path}
+
+        # 报告格式
+        params['output_format'] = self.vuln_format_combo.currentText()
+
+        # 数据库更新策略
+        params['update_db'] = self.vuln_update_combo.currentText()
+
+        # CVSS下限
+        cvss_text = self.vuln_cvss_input.text().strip()
+        if cvss_text:
+            try:
+                params['cvss_limit'] = float(cvss_text)
+            except ValueError:
+                QMessageBox.warning(self, "输入错误", "CVSS下限必须是数字")
+                return
+
+        # 严重级别过滤
+        severity = self.vuln_severity_combo.currentText()
+        if severity != '(不限)':
+            params['severity_filter'] = severity
+
+        # NVD API Key
+        apikey = self.vuln_apikey_input.text().strip()
+        if apikey:
+            params['nvd_api_key'] = apikey
+
+        # 离线模式
+        params['offline'] = self.vuln_offline_checkbox.isChecked()
+
+        # 输出目录
+        output_dir = self.vuln_output_input.text().strip()
+        if output_dir:
+            params['output_dir'] = output_dir
+
+        cve_bin_tool_path = self.vuln_tool_input.text().strip()
+        if cve_bin_tool_path:
+            params['cve_bin_tool_path'] = cve_bin_tool_path
+
+        self.start_worker('vulnerability_scanner', params)
             
     def execute_tls_analysis(self):
         """执行TLS分析"""
@@ -475,7 +671,7 @@ def main():
     
     # 设置应用信息
     app.setApplicationName("AutoAIO Security Test Platform")
-    app.setApplicationVersion("1.0.2")
+    app.setApplicationVersion("1.3.0")
     
     # 创建并显示主窗口
     window = SecurityTestGUI()
