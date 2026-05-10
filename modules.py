@@ -14,6 +14,8 @@ import subprocess
 import json
 import logging
 import importlib.util
+import shutil
+import tempfile
 from collections import deque
 from datetime import datetime
 #from typing import Dict, Any, Set
@@ -1424,6 +1426,34 @@ class VulnerabilityScannerModule(BaseModule):
         if self.output_callback:
             self.output_callback(message)
 
+    def _create_aiohttp_resolver_patch(self) -> Path:
+        """创建仅对cve-bin-tool子进程生效的aiohttp DNS解析器补丁"""
+        patch_dir = Path(tempfile.mkdtemp(prefix="autoaio_cve_patch_"))
+        sitecustomize_file = patch_dir / "sitecustomize.py"
+        sitecustomize_file.write_text(
+            "\n".join([
+                "try:",
+                "    import aiohttp.resolver as _resolver",
+                "    import aiohttp.connector as _connector",
+                "    _resolver.DefaultResolver = _resolver.ThreadedResolver",
+                "    _connector.DefaultResolver = _resolver.ThreadedResolver",
+                "except Exception:",
+                "    pass",
+                "",
+            ]),
+            encoding='utf-8'
+        )
+        return patch_dir
+
+    def _cleanup_aiohttp_resolver_patch(self, patch_dir: Optional[Path]):
+        """清理临时aiohttp DNS解析器补丁目录"""
+        if not patch_dir:
+            return
+        try:
+            shutil.rmtree(patch_dir, ignore_errors=True)
+        except Exception:
+            pass
+
     def _stream_command(
         self,
         cmd: list,
@@ -1623,18 +1653,27 @@ class VulnerabilityScannerModule(BaseModule):
         self._emit("")
 
         # 执行扫描（实时输出）
-        # 注入 AIOHTTP_NO_EXTENSIONS=1，禁用 aiodns/pycares 异步DNS，
-        # 强制 aiohttp 使用系统默认 DNS 解析器，避免 Windows 上 DNS 解析失败
-        vuln_env = {'AIOHTTP_NO_EXTENSIONS': '1'}
+        # cve-bin-tool更新数据库时会使用aiohttp；如果工具环境安装了aiodns/pycares，
+        # aiohttp默认会走AsyncResolver，在部分Windows网络环境下容易DNS解析失败。
+        # 这里通过仅对子进程可见的sitecustomize补丁，强制aiohttp使用ThreadedResolver。
+        resolver_patch_dir = self._create_aiohttp_resolver_patch()
+        existing_pythonpath = os.environ.get('PYTHONPATH', '')
+        vuln_env = {
+            'AIOHTTP_NO_EXTENSIONS': '1',
+            'PYTHONPATH': str(resolver_patch_dir) + (os.pathsep + existing_pythonpath if existing_pythonpath else '')
+        }
         head_lines = int(params.get('log_head_lines', self.stream_head_lines))
         tail_lines = int(params.get('log_tail_lines', self.stream_tail_lines))
-        returncode, output_preview, total_output_lines, omitted_output_lines = self._stream_command(
-            cmd,
-            env=vuln_env,
-            raw_log_file=raw_output_file,
-            head_lines=head_lines,
-            tail_lines=tail_lines
-        )
+        try:
+            returncode, output_preview, total_output_lines, omitted_output_lines = self._stream_command(
+                cmd,
+                env=vuln_env,
+                raw_log_file=raw_output_file,
+                head_lines=head_lines,
+                tail_lines=tail_lines
+            )
+        finally:
+            self._cleanup_aiohttp_resolver_patch(resolver_patch_dir)
 
         # 写入扫描摘要
         with open(summary_file, 'w', encoding='utf-8') as f:
