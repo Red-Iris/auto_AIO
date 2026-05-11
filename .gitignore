@@ -1,0 +1,44 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Build output
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# Runtime data
+logs/
+*.log
+
+# Generated project outputs
+security_test_*/
+http_urls_*/
+non_domain_sni_*/
+
+# Config (contains user-specific paths)
+config.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# cve-bin-tool cache
+.cve_bin_tool/
+
+# Temporary patches / tools
+tools/cve-venv/
+tools/.venv/

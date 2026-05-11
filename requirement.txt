@@ -4,9 +4,8 @@
 
 # --- Runtime ---
 pyshark==0.6
-PyQt5==5.15.11
-PyQt5-Qt5==5.15.2
-PyQt5_sip==12.18.0
+PyQt6==6.9.1
+PyQt6_sip==13.10.0
 cve-bin-tool==3.4
 lxml==6.0.2
 

@@ -18,6 +18,7 @@ import sys
 import argparse
 from core import ModuleManager, get_default_tshark_path, get_version
 from modules import TLSAnalyzerModule, NetworkScannerModule, VulnerabilityScannerModule
+import config as app_config
 
 
 def main():
@@ -81,26 +82,31 @@ def main():
     module_manager.register_module(TLSAnalyzerModule(debug_mode=args.debug))
     module_manager.register_module(NetworkScannerModule(debug_mode=args.debug))
     module_manager.register_module(VulnerabilityScannerModule(debug_mode=args.debug))
-    
+
+    # 加载持久化配置作为默认值（命令行参数优先）
+    saved_config = app_config.load_config()
+    default_output_dir = args.output_dir or saved_config.get('default_output_dir')
+
     # 准备参数
     params = {
-        'output_dir': args.output_dir
+        'output_dir': default_output_dir
     }
-    
+
     # 根据模块类型执行相应功能
     try:
         if args.module == 'tls':
             params['pcap_file'] = args.pcap_file
-            # 如果用户指定了TShark路径，则使用该路径；否则尝试获取默认路径
+            # 查找顺序：命令行 > 配置文件 > 自动发现
             if args.tshark_path:
                 params['tshark_path'] = args.tshark_path
             else:
-                default_tshark_path = get_default_tshark_path()
-                if default_tshark_path:
-                    params['tshark_path'] = default_tshark_path
+                tshark_path = app_config.get_tshark_path() or get_default_tshark_path()
+                if tshark_path:
+                    params['tshark_path'] = tshark_path
                 else:
                     print("警告: 未找到TShark，请确保已安装Wireshark并指定TShark路径")
                     print("提示: 可以通过 --tshark-path 参数指定TShark可执行文件的路径")
+                    print("      或在 GUI 的系统检查页面配置后自动保存")
                     sys.exit(1)
             # 添加证书生成参数
             params['generate_certificates'] = args.generate_certificates
@@ -113,15 +119,17 @@ def main():
             params['target_path'] = args.target_path
             params['output_format'] = args.format
             params['update_db'] = args.update_db
-            if args.nvd_api_key:
-                params['nvd_api_key'] = args.nvd_api_key
+            nvd_key = args.nvd_api_key or saved_config.get('nvd_api_key')
+            if nvd_key:
+                params['nvd_api_key'] = nvd_key
             if args.cvss:
                 params['cvss_limit'] = args.cvss
             if args.severity:
                 params['severity_filter'] = args.severity
             params['offline'] = args.offline
-            if args.cve_bin_tool:
-                params['cve_bin_tool_path'] = args.cve_bin_tool
+            cve_path = args.cve_bin_tool or saved_config.get('cve_bin_tool_path')
+            if cve_path:
+                params['cve_bin_tool_path'] = cve_path
             success = module_manager.execute_module('vulnerability_scanner', params)
         else:
             print(f"未知模块: {args.module}")

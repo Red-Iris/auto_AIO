@@ -27,12 +27,30 @@ import ipaddress
 import re
 
 
+def _cleanup_old_logs(log_dir: str = "logs", keep_days: int = 30):
+    """删除超过 keep_days 天的旧日志文件，防止日志无限增长"""
+    import time
+    if not os.path.isdir(log_dir):
+        return
+    cutoff = time.time() - keep_days * 86400
+    try:
+        for fname in os.listdir(log_dir):
+            fpath = os.path.join(log_dir, fname)
+            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+    except OSError:
+        pass
+
+
 def setup_logging(module_name: str, debug_mode: bool = False):
     """设置日志记录"""
     # 创建logs目录
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
+
+    # 清理旧日志（保留最近30天）
+    _cleanup_old_logs(log_dir)
 
     # 使用固定的logger名称，避免每次调用创建新logger实例
     logger = logging.getLogger(module_name)
@@ -1445,6 +1463,35 @@ class VulnerabilityScannerModule(BaseModule):
         )
         return patch_dir
 
+    @staticmethod
+    def _cleanup_raw_log(log_path: Path):
+        """过滤 cve-bin-tool 原始日志中的 aiohttp/ProactorEventLoop 关机噪音"""
+        if not log_path.exists():
+            return
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+
+            filtered = []
+            in_noise = False
+            for line in lines:
+                if line.startswith('Exception ignored in:') and '__del__' in line:
+                    in_noise = True
+                    continue
+                if in_noise:
+                    stripped = line.strip()
+                    if stripped in ('RuntimeError: Event loop is closed',
+                                    'ValueError: I/O operation on closed pipe'):
+                        in_noise = False
+                    continue
+                filtered.append(line)
+
+            if len(filtered) < len(lines):
+                with open(log_path, 'w', encoding='utf-8', errors='replace') as f:
+                    f.writelines(filtered)
+        except OSError:
+            pass
+
     def _cleanup_aiohttp_resolver_patch(self, patch_dir: Optional[Path]):
         """清理临时aiohttp DNS解析器补丁目录"""
         if not patch_dir:
@@ -1674,6 +1721,9 @@ class VulnerabilityScannerModule(BaseModule):
             )
         finally:
             self._cleanup_aiohttp_resolver_patch(resolver_patch_dir)
+
+        # 清理 cve-bin-tool 关机噪音
+        VulnerabilityScannerModule._cleanup_raw_log(raw_output_file)
 
         # 写入扫描摘要
         with open(summary_file, 'w', encoding='utf-8') as f:

@@ -5,7 +5,7 @@ a = Analysis(
     ['gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('style_dark.qss', '.'), ('style_light.qss', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

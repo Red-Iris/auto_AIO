@@ -11,12 +11,13 @@ Date: 2026-03-07
 
 import os
 import sys
+import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 def get_version():
@@ -159,19 +160,50 @@ def sanitize_filename(name: str) -> str:
 
 def get_default_tshark_path():
     """
-    获取系统默认的TShark路径
+    获取系统默认的TShark路径。
+
+    查找策略（按优先级）：
+    1. shutil.which('tshark') — 跨平台，查系统PATH
+    2. 各平台常见安装路径
     """
-    possible_paths = [
-        r"C:\Program Files\Wireshark\tshark.exe",
-        r"C:\Program Files (x86)\Wireshark\tshark.exe",
-        r"C:\software\Wireshark\tshark.exe",
-        r"C:\software\wireshark\tshark.exe",
-        r"C:\Wireshark\tshark.exe",
-        r"E:\Wireshark\tshark.exe"  # 添加E盘路径
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    
+    # 1) 优先通过 PATH 查找（Linux/macOS 通常能命中，Windows 装了 Wireshark 并勾选PATH也行）
+    from_path = shutil.which('tshark')
+    if from_path and os.path.isfile(from_path):
+        return from_path
+
+    # 2) 平台特有路径回退
+    if sys.platform == 'win32':
+        candidates = [
+            r"C:\Program Files\Wireshark\tshark.exe",
+            r"C:\Program Files (x86)\Wireshark\tshark.exe",
+            r"D:\Wireshark\tshark.exe",
+            r"E:\Wireshark\tshark.exe",
+        ]
+        # 同时扫描所有盘符下的常见目录（适配非系统盘安装）
+        for drive in ['C', 'D', 'E', 'F', 'G']:
+            candidates.append(rf"{drive}:\software\Wireshark\tshark.exe")
+            candidates.append(rf"{drive}:\software\wireshark\tshark.exe")
+            candidates.append(rf"{drive}:\Wireshark\tshark.exe")
+
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+    elif sys.platform == 'darwin':
+        candidates = [
+            '/usr/local/bin/tshark',
+            '/opt/local/bin/tshark',
+            '/Applications/Wireshark.app/Contents/MacOS/tshark',
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+    else:
+        candidates = [
+            '/usr/bin/tshark',
+            '/usr/local/bin/tshark',
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+
     return None
