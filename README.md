@@ -2,7 +2,7 @@
 
 针对物联网（IoT）智能家居设备的模块化安全测试平台，用于效率化地执行 TLS 证书画像分析、域名劫持测试、网络端口扫描和固件漏洞扫描。
 
-**版本：v2.0.1**
+**版本：v2.1.0**
 
 ---
 
@@ -36,10 +36,10 @@ chmod +x setup.sh && ./setup.sh
 脚本自动完成：
 - 检测 Python、TShark、Nmap、OpenSSL 是否就绪
 - 给出缺失工具的下载链接
-- 在 `tools/cve-venv/` 下创建独立的 cve-bin-tool 虚拟环境
+- 在 `tools/cve-venv/` 下创建独立的 cve-bin-tool 虚拟环境（清华镜像源）
 - 生成 `config.json` 保存检测到的工具路径
 
-完成后运行 `python gui.py`，切到"系统检查"标签页可随时复查环境状态。
+启动 GUI 后切到"系统检查"标签页可随时复查环境状态。首次启动时会自动将发现的工具路径写入 `config.json`。
 
 ---
 
@@ -61,13 +61,17 @@ chmod +x setup.sh && ./setup.sh
 python gui.py
 ```
 
-四个标签页：
+界面采用侧边栏导航 + 深浅色双主题设计：
+
+- **侧边栏** — 四个功能模块一键切换，底部滑动开关一键切换深色/浅色主题
 - **TLS 域名分析** — 选择 pcap 文件 → 可选配 TShark 路径和输出目录 → 勾选"生成证书" → 点击执行
 - **网络扫描** — 输入目标 IP → 选择 TCP/UDP → 精简/详细模式 → 执行
 - **漏洞扫描** — 选择固件目录或二进制文件 → 配置报告格式/CVSS 阈值/API Key → 执行
 - **系统检查** — 一键检测本机环境是否就绪，显示各工具版本和路径
+- **执行日志** — 底部日志面板可通过拖拽分割条自由调整大小，支持折叠/展开
+- **主题切换** — 侧边栏底部的滑动开关一键切换深色/浅色主题，设置自动持久化
 
-首次配置的工具路径会自动保存到 `config.json`，下次启动 GUI 自动回填。
+首次启动自动检测 TShark 路径并保存到 `config.json`，后续启动自动回填。
 
 ### CLI 命令行
 
@@ -126,6 +130,8 @@ pip install -r requirement.txt
 python gui.py
 ```
 
+> 技术栈：Python 3.8+ / PyQt6 / pyshark / python-nmap / OpenSSL / cve-bin-tool
+
 ---
 
 ## 打包分发（PyInstaller → exe）
@@ -136,11 +142,12 @@ build_gui.bat
 
 输出：`dist/AutoAIO_Security_Test.exe`
 
-### 分发给同事的 ZIP 包内容
+### 使用方法
 
 1. `dist/AutoAIO_Security_Test.exe` — 主程序（无需 Python）
-2. `setup.ps1` / `setup.sh` — 环境检测脚本
-3. 告知对方：先运行 `setup.ps1`，再双击 exe
+2. `style_dark.qss` / `style_light.qss` — 主题样式文件（与 exe 同目录）
+3. `setup.ps1` / `setup.sh` — 环境检测脚本
+4. 先运行 `setup.ps1`，再双击 exe
 
 > 注意：exe 仍需 Wireshark、Nmap、OpenSSL 三项系统软件。cve-bin-tool 由 setup 脚本自动安装到 `tools/` 目录。
 
@@ -148,7 +155,7 @@ build_gui.bat
 
 ## 配置系统
 
-`config.json`（程序目录下，自动生成）保存以下设置：
+`config.json`（程序目录下，首次启动自动生成）保存以下设置：
 
 | 配置项 | 说明 |
 |--------|------|
@@ -156,6 +163,7 @@ build_gui.bat
 | `cve_bin_tool_path` | cve-bin-tool 路径 |
 | `nvd_api_key` | NVD API 密钥 |
 | `default_output_dir` | 默认输出目录 |
+| `theme` | 界面主题（dark / light） |
 
 查找优先级：**命令行参数 > config.json > 自动发现（PATH / 常见路径）**
 
@@ -173,7 +181,8 @@ security_test_2026-05-08_14-30-22/
 │   └── http_urls_20260508_143022.txt
 ├── vuln_scan_firmware_20260508_143022/
 │   ├── cve_report_20260508_143022.csv
-│   └── scan_summary_20260508_143022.txt
+│   ├── scan_summary_20260508_143022.txt
+│   └── cve_raw_output_20260508_143022.log
 └── nmap_tcp_scan_192_168_1_1/
     ├── nmap_tcp_scan_192.168.1.1.txt
     └── nmap_tcp_scan_192.168.1.1.xml
@@ -186,6 +195,7 @@ security_test_2026-05-08_14-30-22/
 ## cve-bin-tool 发现策略
 
 漏洞扫描模块按以下顺序查找 cve-bin-tool：
+
 1. GUI/CLI 手动指定的路径
 2. 环境变量 `AUTOAIO_CVE_BIN_TOOL`
 3. 程序目录 `tools/cve-venv/` 下的专用工具环境（setup 脚本创建）
@@ -201,6 +211,7 @@ security_test_2026-05-08_14-30-22/
 ## 跨平台支持
 
 本平台支持 Windows、Linux 和 macOS。TShark 路径发现策略：
+
 1. 优先通过系统 PATH 查找（`shutil.which`）
 2. 回退到各平台常见安装路径
 3. 用户可通过配置文件或命令行参数显式指定
@@ -212,6 +223,7 @@ security_test_2026-05-08_14-30-22/
 ## 扩展
 
 平台采用模块化架构（`core.py` 的 `BaseModule` + `ModuleManager`），新增功能只需：
+
 1. 创建继承 `BaseModule` 的类
 2. 实现 `name()`、`description()`、`execute(params)` 三个方法
 3. 在 CLI/GUI 中注册即可使用
