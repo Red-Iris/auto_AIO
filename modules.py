@@ -1463,35 +1463,6 @@ class VulnerabilityScannerModule(BaseModule):
         )
         return patch_dir
 
-    @staticmethod
-    def _cleanup_raw_log(log_path: Path):
-        """过滤 cve-bin-tool 原始日志中的 aiohttp/ProactorEventLoop 关机噪音"""
-        if not log_path.exists():
-            return
-        try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-
-            filtered = []
-            in_noise = False
-            for line in lines:
-                if line.startswith('Exception ignored in:') and '__del__' in line:
-                    in_noise = True
-                    continue
-                if in_noise:
-                    stripped = line.strip()
-                    if stripped in ('RuntimeError: Event loop is closed',
-                                    'ValueError: I/O operation on closed pipe'):
-                        in_noise = False
-                    continue
-                filtered.append(line)
-
-            if len(filtered) < len(lines):
-                with open(log_path, 'w', encoding='utf-8', errors='replace') as f:
-                    f.writelines(filtered)
-        except OSError:
-            pass
-
     def _cleanup_aiohttp_resolver_patch(self, patch_dir: Optional[Path]):
         """清理临时aiohttp DNS解析器补丁目录"""
         if not patch_dir:
@@ -1544,25 +1515,38 @@ class VulnerabilityScannerModule(BaseModule):
                 startupinfo=startupinfo,
                 env=proc_env
             )
+            in_noise = False
             for line in proc.stdout:
                 line = line.rstrip('\n\r')
-                if line:
-                    total_lines += 1
-                    if raw_log:
-                        raw_log.write(line + '\n')
+                if not line:
+                    continue
 
-                    if total_lines <= head_limit:
-                        head_output.append(line)
-                        self._emit(line)
-                    else:
-                        if tail_limit > 0:
-                            tail_output.append(line)
-                        if not omitted_notice_emitted:
-                            self._emit(
-                                f"[漏洞扫描日志过多，GUI仅显示前{head_limit}行和最后{tail_limit}行；"
-                                f"完整输出保存至: {raw_log_file}]"
-                            )
-                            omitted_notice_emitted = True
+                if line.startswith('Exception ignored in:') and '__del__' in line:
+                    in_noise = True
+                    continue
+                if in_noise:
+                    stripped = line.strip()
+                    if stripped in ('RuntimeError: Event loop is closed',
+                                    'ValueError: I/O operation on closed pipe'):
+                        in_noise = False
+                    continue
+
+                total_lines += 1
+                if raw_log:
+                    raw_log.write(line + '\n')
+
+                if total_lines <= head_limit:
+                    head_output.append(line)
+                    self._emit(line)
+                else:
+                    if tail_limit > 0:
+                        tail_output.append(line)
+                    if not omitted_notice_emitted:
+                        self._emit(
+                            f"[漏洞扫描日志过多，GUI仅显示前{head_limit}行和最后{tail_limit}行；"
+                            f"完整输出保存至: {raw_log_file}]"
+                        )
+                        omitted_notice_emitted = True
             proc.wait(timeout=timeout)
 
             omitted_lines = max(0, total_lines - head_limit - len(tail_output))
@@ -1721,9 +1705,6 @@ class VulnerabilityScannerModule(BaseModule):
             )
         finally:
             self._cleanup_aiohttp_resolver_patch(resolver_patch_dir)
-
-        # 清理 cve-bin-tool 关机噪音
-        VulnerabilityScannerModule._cleanup_raw_log(raw_output_file)
 
         # 写入扫描摘要
         with open(summary_file, 'w', encoding='utf-8') as f:
